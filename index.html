@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; connect-src https://api.github.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; manifest-src 'self'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<title>社長の机</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="社長の机">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#EDF0EE" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0F1614" media="(prefers-color-scheme: dark)">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&family=Zen+Kaku+Gothic+New:wght@700;900&display=swap">
+<style>
+/* 配置：上に Issue 切り替え（全体／#2／#3／#4／#6）。全体は「数字のタイル → Issue カード → 左に依頼・右に部署と予定」。Issue を選ぶとその分だけになる。 */
+:root{
+  --bg:#EDF0EE;           /* 机の面：緑みのある薄い灰 */
+  --surface:#FFFFFF;
+  --surface-2:#F5F7F6;    /* 実物の置き場（紙の色） */
+  --fg:#16201D;
+  --muted:#5A6A65;
+  --line:#D5DCD9;
+  --accent:#1B5E9B;       /* 押せるもの */
+  --accent-fg:#FFFFFF;
+  --accent-soft:#E1EDF7;
+  --warn:#9A5B00;  --warn-soft:#FBEFD6;   /* 要返事 */
+  --good:#1D6B3F;  --good-soft:#DDF0E4;   /* 動いている・送った */
+  --bad:#A32A2A;   --bad-soft:#F8E0DF;    /* 止まった・未確認 */
+  --idle:#5A6A65;  --idle-soft:#E6EBE9;   /* 待機 */
+  --font-display:"Zen Kaku Gothic New","Noto Sans JP",system-ui,sans-serif;
+  --font-body:"Noto Sans JP",system-ui,-apple-system,"Hiragino Sans","Yu Gothic",sans-serif;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0F1614;--surface:#18211F;--surface-2:#202B28;--fg:#E7EEEB;--muted:#9BABA5;--line:#2D3A36;
+  --accent:#7DB6EA;--accent-fg:#0B1B2A;--accent-soft:#1B2E40;
+  --warn:#F0B35A;--warn-soft:#3A2D14;--good:#7FD3A0;--good-soft:#173324;--bad:#F29A98;--bad-soft:#3C1C1C;--idle:#9BABA5;--idle-soft:#26312E;
+  color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0F1614;--surface:#18211F;--surface-2:#202B28;--fg:#E7EEEB;--muted:#9BABA5;--line:#2D3A36;
+  --accent:#7DB6EA;--accent-fg:#0B1B2A;--accent-soft:#1B2E40;
+  --warn:#F0B35A;--warn-soft:#3A2D14;--good:#7FD3A0;--good-soft:#173324;--bad:#F29A98;--bad-soft:#3C1C1C;--idle:#9BABA5;--idle-soft:#26312E;
+  color-scheme:dark}
+
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font-family:var(--font-body);font-size:15px;line-height:1.65;
+  padding-block:0 48px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.wrap{max-width:1200px;margin:0 auto}
+h1,h2,h3{font-family:var(--font-display);margin:0;text-wrap:balance;line-height:1.35}
+a{color:var(--accent)}
+button,input,textarea{font:inherit;color:inherit}
+:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+
+/* 上の帯と切り替え */
+.top{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;background:var(--bg);padding:10px 0 10px;border-bottom:1px solid var(--line)}
+.top-row{display:flex;align-items:baseline;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.top h1{font-size:22px;font-weight:900}
+.stamp{color:var(--muted);font-size:12px}
+.tabs{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
+.tab{display:inline-flex;align-items:center;gap:6px;min-height:40px;padding:0 12px;border-radius:999px;border:1px solid var(--line);background:var(--surface);font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap}
+.tab[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:var(--accent-fg)}
+.bd{min-width:20px;height:20px;border-radius:999px;background:var(--idle-soft);color:var(--idle);font-size:11px;display:inline-flex;align-items:center;justify-content:center;padding:0 6px;font-variant-numeric:tabular-nums}
+.bd.need{background:var(--warn);color:var(--surface)}
+.tab[aria-pressed="true"] .bd{background:var(--accent-fg);color:var(--accent)}
+.proto{margin:10px 0 0;background:var(--warn-soft);color:var(--warn);border-radius:8px;padding:6px 12px;font-size:12px;line-height:1.5}
+main{margin-top:14px;display:flex;flex-direction:column;gap:22px}
+
+/* 数字のタイル */
+.tiles{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+@media(min-width:640px){.tiles{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(min-width:1000px){.tiles.n6{grid-template-columns:repeat(6,minmax(0,1fr))}.tiles.n4{grid-template-columns:repeat(4,minmax(0,1fr))}}
+.tile{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:10px 12px;display:flex;flex-direction:column;gap:2px;min-width:0}
+.t-label{font-size:12px;color:var(--muted);font-weight:700}
+.t-num{font-family:var(--font-display);font-weight:900;font-size:30px;line-height:1.15;font-variant-numeric:tabular-nums}
+.t-num small{font-family:var(--font-body);font-weight:500;font-size:12px;color:var(--muted);margin-left:4px}
+.tile.need .t-num{color:var(--warn)}
+.t-sub{font-size:12px;color:var(--muted);line-height:1.45;overflow-wrap:anywhere}
+.bars{display:flex;align-items:flex-end;gap:2px;height:20px;margin-top:4px}
+.bars i{flex:1 1 0;max-width:6px;height:100%;background:var(--good);border-radius:1px}
+.bars i.ng{background:var(--bad);height:55%}
+
+/* Issue カード */
+.sec-h{display:flex;align-items:baseline;gap:10px;margin:0 0 8px;flex-wrap:wrap}
+.sec-h h2{font-size:17px;font-weight:900}
+.sec-h small{color:var(--muted);font-size:12px}
+.icards{display:grid;grid-template-columns:minmax(0,1fr);gap:10px}
+@media(min-width:560px){.icards{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(min-width:1000px){.icards{grid-template-columns:repeat(4,minmax(0,1fr))}}
+.icard{text-align:left;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:6px;cursor:pointer;min-width:0}
+.icard:hover{border-color:var(--accent)}
+.icard.hot{border-color:var(--warn)}
+.ic-top{display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap}
+.ic-top b{font-family:var(--font-display);font-size:16px;font-weight:900}
+.ic-phase{font-size:13px;overflow-wrap:anywhere}
+.ic-last{font-size:12px;color:var(--muted);overflow-wrap:anywhere;border-top:1px solid var(--line);padding-top:6px}
+.ic-last b{color:var(--fg)}
+.ic-foot{font-size:12px;color:var(--muted);margin-top:auto}
+.strip{margin-top:10px;background:var(--surface-2);border:1px dashed var(--line);border-radius:10px;padding:8px 12px;font-size:12px;color:var(--muted);overflow-wrap:anywhere}
+
+.cols{display:grid;grid-template-columns:minmax(0,1fr);gap:22px}
+@media(min-width:960px){.cols{grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);gap:28px;align-items:start}}
+section{min-width:0}
+.stack{display:flex;flex-direction:column;gap:14px}
+.side{display:flex;flex-direction:column;gap:22px;min-width:0}
+
+/* 依頼カード（開閉はその場で） */
+.req{background:var(--surface);border:1px solid var(--line);border-radius:14px;overflow:hidden}
+.req[data-urgent="true"]{border-color:var(--warn)}
+.req-head{width:100%;text-align:left;background:none;border:0;padding:12px 14px;display:flex;flex-direction:column;gap:6px;cursor:pointer}
+.tags{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.pill{display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:700;border-radius:999px;padding:1px 9px;background:var(--idle-soft);color:var(--idle);white-space:nowrap;text-decoration:none}
+.pill.warn{background:var(--warn-soft);color:var(--warn)}
+.pill.good{background:var(--good-soft);color:var(--good)}
+.pill.bad{background:var(--bad-soft);color:var(--bad)}
+.pill.acc{background:var(--accent-soft);color:var(--accent)}
+.rh-title{font-family:var(--font-display);font-size:16px;font-weight:700;line-height:1.4}
+.rh-more{font-size:12px;color:var(--accent);font-weight:700}
+.req-main{padding:0 14px 14px;display:flex;flex-direction:column;gap:12px}
+.lead{margin:0}
+.real{background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:10px}
+.real-label{font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.06em}
+.post{border-left:3px solid var(--line);padding:2px 0 2px 10px;display:flex;flex-direction:column;gap:2px}
+.post.flag{border-left-color:var(--warn)}
+.post-meta{display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap;font-size:12px;color:var(--muted)}
+.post-meta b{color:var(--fg)}
+.post p{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
+.flagbtn{background:none;border:1px solid var(--line);border-radius:999px;font-size:12px;color:var(--muted);padding:2px 10px;min-height:32px;cursor:pointer}
+.flagbtn[aria-pressed="true"]{background:var(--warn-soft);border-color:var(--warn);color:var(--warn);font-weight:700}
+.linklist{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:6px}
+.linklist li{display:flex;gap:8px;align-items:baseline}
+.linklist a{overflow-wrap:anywhere}
+.checks{margin:0;padding-left:1.3em}
+.facts{display:grid;grid-template-columns:auto minmax(0,1fr);gap:2px 12px;margin:0;font-size:13px}
+.facts dt{color:var(--muted);font-weight:700;white-space:nowrap}
+.facts dd{margin:0;overflow-wrap:anywhere}
+.push{background:var(--accent-soft);border-radius:10px;padding:8px 12px;font-size:14px}
+.push b{color:var(--accent)}
+.src{font-size:12px;color:var(--muted);overflow-wrap:anywhere}
+details>summary{cursor:pointer;color:var(--accent);font-size:13px;min-height:32px;display:flex;align-items:center}
+
+/* 答える欄 */
+.answer{border-top:1px solid var(--line);background:var(--surface-2);padding:12px 14px 14px;display:flex;flex-direction:column;gap:10px}
+.btnrow{display:flex;gap:8px;flex-wrap:wrap}
+.btn{min-height:48px;padding:0 20px;border-radius:12px;border:1px solid var(--line);background:var(--surface);font-weight:700;cursor:pointer;flex:1 1 120px}
+.btn.primary{background:var(--accent);color:var(--accent-fg);border-color:var(--accent)}
+.btn.choice[aria-pressed="true"]{background:var(--accent);color:var(--accent-fg);border-color:var(--accent)}
+.btn:disabled{opacity:.5;cursor:default}
+.note{width:100%;min-height:48px;border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:var(--surface);resize:vertical}
+.hint{font-size:12px;color:var(--muted);margin:0}
+.sent{background:var(--good-soft);color:var(--good);border-radius:10px;padding:10px 12px;font-size:13px;line-height:1.6}
+.sent pre{margin:6px 0 0;white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;color:var(--fg);background:var(--surface);border-radius:8px;padding:8px 10px;font-size:13px}
+.linkbtn{background:none;border:0;color:var(--accent);text-decoration:underline;cursor:pointer;padding:6px 0;min-height:32px}
+
+/* 部署・予定・溜め */
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:14px}
+.depts{list-style:none;margin:0;padding:2px 14px}
+.dept{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 10px;padding:9px 0;border-bottom:1px solid var(--line)}
+.dept:last-child{border-bottom:0}
+.dept b{font-weight:700}
+.dept p{grid-column:1/-1;margin:0;font-size:13px;color:var(--muted);overflow-wrap:anywhere}
+.dept time{grid-column:1/-1;font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+.relay{padding:10px 14px;border-top:1px solid var(--line);font-size:12px;color:var(--muted)}
+.events,.feed{list-style:none;margin:0;padding:2px 14px}
+.ev{display:grid;grid-template-columns:84px minmax(0,1fr);gap:10px;padding:9px 0;border-bottom:1px solid var(--line)}
+.ev:last-child{border-bottom:0}
+.ev .when{font-family:var(--font-display);font-weight:900;font-size:14px;line-height:1.3;font-variant-numeric:tabular-nums}
+.ev .when small{display:block;font-family:var(--font-body);font-weight:400;font-size:11px;color:var(--muted)}
+.ev p{margin:0;font-size:14px}
+.ev .by{font-size:11px;color:var(--muted)}
+.feed li{display:grid;grid-template-columns:84px minmax(0,1fr);gap:10px;padding:9px 0;border-bottom:1px solid var(--line);font-size:13px}
+.feed li:last-child{border-bottom:0}
+.feed time{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+.feed b{display:block;font-size:12px}
+.feed span{overflow-wrap:anywhere}
+.queue{list-style:none;margin:0;padding:2px 14px;font-size:14px}
+.queue li{padding:8px 0;border-bottom:1px solid var(--line)}
+.queue li:last-child{border-bottom:0}
+.queue small{display:block;color:var(--muted);font-size:12px}
+.unk{color:var(--warn);font-weight:700}
+.empty{padding:16px;color:var(--muted)}
+.none{background:var(--good-soft);color:var(--good);border-radius:14px;padding:16px;font-weight:700}
+@media(prefers-reduced-motion:reduce){*{transition:none!important;scroll-behavior:auto!important}}
+
+/* ---- 本番で足したもの（試作の見た目に合わせる） ---- */
+.tools{display:flex;gap:4px 12px;align-items:center;flex-wrap:wrap;margin-left:auto}
+.tools .linkbtn{font-size:12px;padding:4px 0}
+.setup{padding:16px;display:flex;flex-direction:column;gap:12px}
+.setup h2{font-size:19px;font-weight:900}
+.setup h3{font-size:15px;font-weight:700}
+.setup p{margin:0}
+.setup .checks li{margin-bottom:6px}
+.keyin{width:100%;min-height:48px;border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:var(--surface)}
+.err{background:var(--bad-soft);color:var(--bad);border-radius:14px;padding:14px 16px;display:flex;flex-direction:column;gap:10px;font-weight:700}
+.err p{margin:0;font-weight:500;color:var(--fg)}
+.notice{background:var(--warn-soft);color:var(--warn);border-radius:8px;padding:6px 12px;font-size:12px;line-height:1.5;margin:10px 0 0}
+.sent.ng{background:var(--bad-soft);color:var(--bad)}
+.sent a{color:var(--accent)}
+</style>
+</head>
+<body>
+<!-- この入れ物には会社のデータを置かない。中身は開いたときに、社長の鍵で GitHub から読む（app.js） -->
+<div class="wrap">
+  <header class="top">
+    <div class="top-row"><h1>社長の机</h1><span class="stamp" id="stamp">まだ読み込んでいません</span>
+      <span class="tools" id="tools" hidden><button type="button" class="linkbtn" data-act="reload">読み直す</button><button type="button" class="linkbtn" data-act="forget">鍵を消す</button></span></div>
+    <nav class="tabs" id="tabs" aria-label="Issue の切り替え"></nav>
+  </header>
+  <div id="notice" role="status"></div>
+  <main id="view"></main>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

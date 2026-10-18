@@ -1,0 +1,11 @@
+{
+  "name": "desk",
+  "private": true,
+  "description": "社長の机（入れ物だけ。データは GitHub から読む）",
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "devDependencies": {
+    "jsdom": "26.1.0"
+  }
+}
