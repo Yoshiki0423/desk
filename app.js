@@ -25,9 +25,14 @@
     imageDir: "data/desk-images", // 画像の置き場（app-company の中）。data/<日付>/<依頼id>/ の下に、時刻つきの名前で置く
     maxImages: 6,                 // 1回の答えに付けられる枚数
     maxSide: 1600,                // 送る前に縮める長い辺（px）
-    jpegQuality: 0.82
+    jpegQuality: 0.82,
+    talkIssue: 5,                 // 事業部長に話しかける先（社長の机）。リレーはここへの社長のコメントで事業部長を起こす
+    talkTurns: 5,                 // 「最近のやり取り」に出す往復の数
+    talkFetch: 40                 // やり取りを作るために、#5 の新しい方から読むコメントの数
   };
   const MARK_RE = /^\s*<!--\s*desk:answer\s+(\S+)\s*-->[ \t]*\r?\n?/;
+  const TALK_RE = /^\s*<!--\s*desk:talk\s*-->[ \t]*\r?\n?/;     // 話しかけ（答えではない相談・調べ物の頼み）の印
+  const ANY_MARK_RE = /^\s*<!--\s*desk:(?:answer\s+\S+|talk)\s*-->[ \t]*\r?\n?/;
   const RUN_FAIL = new Set(["failure", "timed_out", "startup_failure"]);
   const SAFE_HREF = /^(https?:|exp:)/i;
 
@@ -419,6 +424,167 @@
     return deliver(r, text);
   }
 
+
+  /* ============ 事業部長に話しかける（#5 に社長のコメントとして書く） ============ */
+  const talk = { note: "", images: [], imgSeq: 0, sending: false, status: null, error: null, canDrop: false, imgFail: false, turns: null, loadErr: "", node: null };
+  const buildTalkBody = (text) => `<!-- desk:talk -->\n${text}`;
+
+  /* #5 の新しい方のコメントを読む（古い順で返す）。#5 には毎日の報告が溜まるので、全部は読まず、最後のページから戻る */
+  async function loadTalkComments(token) {
+    const issue = await (await gh(repoPath(`/issues/${CONFIG.talkIssue}`), token)).json();
+    const total = +issue.comments || 0;
+    if (!total) return [];
+    const per = CONFIG.perPage, last = Math.ceil(total / per);
+    let out = [];
+    for (let page = last; page >= 1 && out.length < CONFIG.talkFetch; page--) {
+      const list = await (await gh(repoPath(`/issues/${CONFIG.talkIssue}/comments?per_page=${per}&page=${page}`), token)).json();
+      if (Array.isArray(list)) out = list.concat(out);
+    }
+    return out;
+  }
+
+  const isReport = (c) => /^\s*【事業部長】毎日の報告/.test((c && c.body) || "");
+
+  /* コメントを「往復」にまとめる。社長のコメント1つ＋その後の返事（毎日の報告は返事に混ぜず、単独の1件）。新しい順に n 件 */
+  function buildTurns(comments, n) {
+    const turns = [];
+    let cur = null;
+    for (const c of comments || []) {
+      if (!c) continue;
+      const mine = !!(c.user && c.user.login === CONFIG.boss);
+      if (mine) {
+        const body = c.body || "";
+        const kind = TALK_RE.test(body) ? "talk" : /^\s*<!--\s*desk:answer/.test(body) ? "answer" : "plain";
+        cur = { boss: { text: body.replace(ANY_MARK_RE, ""), at: c.created_at, url: c.html_url || "", kind }, replies: [], report: null };
+        turns.push(cur);
+      } else if (isReport(c)) {
+        turns.push({ boss: null, replies: [], report: { text: c.body || "", at: c.created_at, url: c.html_url || "" } });
+        cur = null;
+      } else {
+        const r = { text: c.body || "", at: c.created_at, url: c.html_url || "" };
+        if (cur) cur.replies.push(r); else turns.push({ boss: null, replies: [r], report: null });
+      }
+    }
+    return turns.slice(-n).reverse();
+  }
+
+  const speaker = (text) => { const m = /^\s*【([^】]{1,20})】/.exec(text); return m ? m[1] : "返事"; };
+  function bubbleHtml(who, cls, text, at, url) {
+    const t = String(text).trim();
+    const link = url && safeHref(url) ? `　<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">GitHub で見る</a>` : "";
+    const head = `<div class="bub-h"><b>${esc(who)}</b>　${esc(jst(at))}${link}</div>`;
+    if (t.length > 300 || t.split("\n").length > 8) {
+      const first = t.split("\n").find((l) => l.trim()) || "";
+      return `<div class="bub ${cls}">${head}<details><summary>${esc(first.length > 40 ? first.slice(0, 40) + "…" : first)}（長いので畳んでいます）</summary><p class="bub-t">${esc(t)}</p></details></div>`;
+    }
+    return `<div class="bub ${cls}">${head}<p class="bub-t">${esc(t)}</p></div>`;
+  }
+  function turnHtml(t) {
+    if (t.report) return `<div class="turn">${bubbleHtml("事業部長の毎日の報告", "rep", t.report.text, t.report.at, t.report.url)}</div>`;
+    let h = "";
+    if (t.boss) h += bubbleHtml(t.boss.kind === "answer" ? "社長（依頼への答え）" : "社長", "me", t.boss.text, t.boss.at, t.boss.url);
+    h += t.replies.map((r) => bubbleHtml(speaker(r.text), "mgr", r.text, r.at, r.url)).join("");
+    if (t.boss && t.boss.kind !== "answer" && !t.replies.length) h += `<p class="hint">まだ返事はありません。事業部長が読むと、ここに出ます（「読み直す」で更新）。</p>`;
+    return `<div class="turn">${h}</div>`;
+  }
+
+  const talkImgsHtml = (list) => list.map((im, i) => `<figure class="thumb"><img src="${esc(im.dataUrl)}" alt="付ける画像 ${i + 1}"><button type="button" class="x" data-talk="rm|${i}" aria-label="画像 ${i + 1} を外す">外す</button></figure>`).join("");
+
+  function talkNode() {
+    if (talk.node) return talk.node;
+    const el = doc.createElement("section");
+    el.className = "panel"; el.id = "talk";
+    el.innerHTML = `<div class="lbl">事業部長に話しかける</div>
+      <p class="hint">確認してほしいこと・調べてほしいことを、止まっているものがなくても、いつでもここから送れます。Issue #${esc(CONFIG.talkIssue)} に社長のコメントとして書き、事業部長が読みます。</p>
+      <label class="sr" for="talk-note">事業部長への一言</label>
+      <textarea id="talk-note" class="note" rows="3" placeholder="例：〇〇について調べて／△△はどうなっている？"></textarea>
+      <div class="imgbox"><div class="imgs" id="talk-imgs"></div><button type="button" class="linkbtn" data-talk="pick">画像を付ける（写真・スクリーンショット）</button><input class="sr" type="file" accept="image/*" multiple tabindex="-1" aria-hidden="true" data-talkfile="1" id="talk-file"></div>
+      <div class="btnrow"><button type="button" class="btn primary" data-talk="send" id="talk-go">事業部長に送る</button></div>
+      <div id="talk-msg" role="status" class="hint"></div>
+      <div class="lbl" style="margin-top:12px">最近のやり取り（新しい順）　<button type="button" class="linkbtn" data-talk="refresh">読み直す</button></div>
+      <div id="talk-list"></div>`;
+    talk.node = el;
+    return el;
+  }
+
+  function paintTalk() {
+    const el = talkNode();
+    el.querySelector("#talk-imgs").innerHTML = talkImgsHtml(talk.images);
+    const msg = el.querySelector("#talk-msg");
+    if (talk.error) {
+      const prog = talk.images.length && talk.imgFail ? `画像：${talk.images.length} 枚のうち ${talk.images.filter((x) => x.saved).length} 枚は保存できました。` : "事業部長にはまだ届いていない可能性が高いです。";
+      msg.innerHTML = `<div class="sent ng" role="alert"><b>送れませんでした。</b>${esc(talk.error)}。${esc(prog)}書いた文は残してあるので、もう一度「事業部長に送る」を押せます。${talk.canDrop && talk.images.length ? `<div class="btnrow"><button type="button" class="btn" data-talk="drop">画像を外して、言葉だけ送る</button></div>` : ""}</div>`;
+    } else if (talk.status) msg.innerHTML = `<div class="sent" role="status">${esc(talk.status)}</div>`;
+    else msg.textContent = "";
+    const list = el.querySelector("#talk-list");
+    if (talk.loadErr) list.innerHTML = `<p class="notice">${esc(talk.loadErr)}</p>`;
+    else if (!talk.turns) list.innerHTML = `<p class="hint">読み込み中…</p>`;
+    else if (!talk.turns.length) list.innerHTML = `<p class="hint">まだやり取りはありません。</p>`;
+    else {
+      const head = talk.turns.slice(0, 2), rest = talk.turns.slice(2);
+      list.innerHTML = head.map(turnHtml).join("") + (rest.length ? `<details><summary>それより前のやり取り（${rest.length}件）</summary>${rest.map(turnHtml).join("")}</details>` : "");
+    }
+    el.querySelector("#talk-go").disabled = talk.sending;
+  }
+
+  async function loadTalk() {
+    try {
+      talk.turns = buildTurns(await loadTalkComments(keyStore.get()), CONFIG.talkTurns);
+      talk.loadErr = "";
+    } catch (e) {
+      talk.loadErr = "やり取りを読めませんでした（" + reasonOf(e, "load") + "）。送ることはできます";
+    }
+    paintTalk();
+  }
+
+  async function addTalkImages(files) {
+    const list = [...files].filter((f) => f && (/^image\//.test(f.type || "") || !f.type));
+    if (!list.length) return;
+    let bad = 0, over = 0;
+    for (const f of list) {
+      if (talk.images.length >= CONFIG.maxImages) { over++; continue; }
+      try {
+        const sh = await shrinkImage(f);
+        talk.imgSeq++;
+        talk.images.push({ dataUrl: sh.dataUrl, base64: sh.base64, path: imagePath("talk", talk.imgSeq), saved: false });
+      } catch (e) { bad++; }
+    }
+    paintTalk();
+    const parts = [];
+    if (over) parts.push(`1回に付けられるのは ${CONFIG.maxImages} 枚までです`);
+    if (bad) parts.push(`${bad} 枚は読めませんでした`);
+    if (parts.length) talkNode().querySelector("#talk-msg").textContent = parts.join("。") + "。";
+  }
+
+  async function sendTalk() {
+    if (talk.sending) return;
+    const ta = talkNode().querySelector("#talk-note");
+    talk.note = ta.value;
+    const text = talk.note.trim() + imageLines(talk);
+    if (!text.trim()) { talk.status = null; talk.error = null; paintTalk(); talkNode().querySelector("#talk-msg").textContent = "送る言葉か画像を入れてください。"; return; }
+    talk.sending = true; talk.error = null; talk.status = null; talk.canDrop = false; talk.imgFail = false;
+    paintTalk();
+    const msg = talkNode().querySelector("#talk-msg");
+    try {
+      for (const im of talk.images) {
+        if (im.saved) continue;
+        msg.textContent = `画像を保存しています…（${talk.images.filter((x) => x.saved).length + 1} / ${talk.images.length}）`;
+        try { await putImage(keyStore.get(), im, "talk"); im.saved = true; }
+        catch (e) { talk.imgFail = true; if (e.status === 403 || e.status === 404) talk.canDrop = true; throw Object.assign(e, { phase: "image" }); }
+      }
+      msg.textContent = "送っています…";
+      const res = await gh(repoPath(`/issues/${CONFIG.talkIssue}/comments`), keyStore.get(), { method: "POST", body: { body: buildTalkBody(text) } });
+      await res.json().catch(() => ({}));
+      talk.note = ""; ta.value = ""; talk.images = []; talk.imgSeq = 0;
+      talk.status = "送りました。事業部長が読みます（返事は下に出ます）。";
+    } catch (e) {
+      talk.error = reasonOf(e, e && e.phase === "image" ? "image" : "send");
+    }
+    talk.sending = false;
+    paintTalk();
+    if (!talk.error) await loadTalk();
+  }
+
   /* ---------- 日付（日本時間の「日」で数える） ---------- */
   const DAY = 864e5;
   const dayNum = (s) => { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(s || "")); return m ? Date.UTC(+m[1], +m[2] - 1, +m[3]) / DAY : NaN; };
@@ -541,7 +707,7 @@
   function viewHtml() {
     const todo = DATA.requests.length
       ? `<section class="panel" id="todo"><div class="lbl">社長がやること</div><div id="req-slot"></div></section>` : "";
-    return verdictHtml() + todo + chartHtml() + aheadHtml() + relayHtml();
+    return verdictHtml() + `<div id="talk-slot"></div>` + todo + chartHtml() + aheadHtml() + relayHtml();
   }
 
   function stampText() {
@@ -554,6 +720,8 @@
     $("#stamp").textContent = stampText();
     if (!DATA) return;
     $("#view").innerHTML = viewHtml();
+    const ts = $("#talk-slot");
+    if (ts) { ts.appendChild(talkNode()); paintTalk(); }
     const slot = $("#req-slot");
     if (slot) DATA.requests.forEach((r) => slot.appendChild(nodes.get(r.id)));
   }
@@ -651,6 +819,7 @@
     });
     draw();
     showPartialNotice(L);
+    await loadTalk();
   }
 
   /* ============ 押されたとき ============ */
@@ -674,6 +843,19 @@
       return reload();
     }
     if (!DATA) return;
+    if (ds.talk) {
+      const [cmd, arg] = ds.talk.split("|");
+      if (cmd === "send") return sendTalk();
+      if (cmd === "refresh") return loadTalk();
+      if (cmd === "pick") { const inp = $("#talk-file"); if (inp) inp.click(); return; }
+      if (cmd === "rm") { talk.images.splice(+arg, 1); paintTalk(); return; }
+      if (cmd === "drop") {
+        if (talk.sending) return;
+        talk.images = []; talk.imgSeq = 0; talk.canDrop = false; talk.imgFail = false; talk.error = null;
+        return sendTalk();
+      }
+      return;
+    }
     if (ds.toggle) { const el = nodes.get(ds.toggle); el.dataset.touched = "1"; setOpen(el, t.getAttribute("aria-expanded") !== "true"); }
     else if (ds.flag) {
       const i = ds.flag.lastIndexOf("|"), id = ds.flag.slice(0, i), n = +ds.flag.slice(i + 1), s = state[id];
@@ -713,6 +895,13 @@
   function start() {
     doc.addEventListener("click", (e) => { onClick(e).catch(() => { /* 画面は落とさない */ }); });
     doc.addEventListener("change", (e) => {
+      const tf = e.target && e.target.closest && e.target.closest("input[data-talkfile]");
+      if (tf && DATA) {
+        const fl = [...(tf.files || [])];
+        try { tf.value = ""; } catch (err) { /* 同じ写真を選び直せなくても進める */ }
+        addTalkImages(fl).catch(() => { /* 画面は落とさない */ });
+        return;
+      }
       const inp = e.target && e.target.closest && e.target.closest("input[data-file]");
       if (!inp || !DATA) return;
       const r = DATA.requests.find((x) => x.id === inp.dataset.file); if (!r) return;
@@ -725,7 +914,7 @@
   }
 
   global.Desk = {
-    CONFIG, shrinkImage, imagePath, findAnswers, buildBody, relayFromRuns, normalize, safeHref, resolveSegments,
+    CONFIG, TALK_RE, buildTurns, buildTalkBody, shrinkImage, imagePath, findAnswers, buildBody, relayFromRuns, normalize, safeHref, resolveSegments,
     started: null,
     start() { this.started = start(); return this.started; }
   };

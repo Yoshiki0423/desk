@@ -472,7 +472,7 @@ test("画像：CSP は GitHub 以外に送らず、画像は data: だけで見�
   const html = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
   assert.ok(html.includes("connect-src https://api.github.com;"));
   assert.ok(html.includes("img-src 'self' data:;") && !/blob:/.test(html));
-  assert.ok(html.includes("app.js?v=3"));
+  assert.ok(html.includes("app.js?v=4"));
   const t = await boot({ token: T });
   await openReq(t, "req-11-posts");
   await attach(t, "req-11-posts", 1);
@@ -503,4 +503,119 @@ test("欄が揃った依頼では、推し・お金・取り消せるか・効�
   await openReq(t, "req-11-posts");
   const card = t.$("#req-11-posts");
   for (const w of ["推し", "お金", "取り消せるか", "効く範囲", "決めること", "実物"]) assert.ok(card.textContent.includes(w), `${w} が出る`);
+});
+
+/* ---------- 事業部長に話しかける ---------- */
+const mgr = (text, at, login) => ({ user: { login: login || "github-actions[bot]" }, body: text, created_at: at, html_url: "https://github.com/example/x/issues/5#issuecomment-" + at.length });
+const talkRoutes = (list, extra) => ({ issue: (n) => json(200, { number: n, comments: list.length }), comments: (n, page) => json(200, n === 5 ? list : []), ...(extra || {}) });
+const talkPosts = (t) => posts(t).filter((c) => /\/issues\/5\/comments$/.test(c.url));
+const settleN = async (t) => { for (let i = 0; i < 10; i++) await new Promise((r) => t.w.setTimeout(r, 0)); };
+
+test("話しかけ：止めているものが0件でも、結論のすぐ下に常に出る", async () => {
+  const d = fixture(); d.requests = [];
+  const t = await boot({ token: T, ...talkRoutes([]), desk: () => json(200, JSON.stringify(d)) });
+  const talk = t.$("#talk");
+  assert.ok(talk, "話しかける欄がある");
+  assert.ok(talk.textContent.includes("事業部長に話しかける"));
+  assert.equal(talk.parentElement.id, "talk-slot");
+  assert.ok(talk.parentElement.previousElementSibling.querySelector(".verdict") || talk.parentElement.previousElementSibling.className.includes("verdict"), "結論の直後");
+  assert.equal(t.$("#todo"), null, "依頼の欄は出ない");
+});
+
+test("話しかけ：送ると #5 に <!-- desk:talk --> つきの社長のコメントで書き、送ったと分かる", async () => {
+  const t = await boot({ token: T, ...talkRoutes([]) });
+  t.$("#talk-note").value = "禁煙の相談先を調べて\n2行目";
+  await click(t.w, t.$('[data-talk="send"]'));
+  const p = talkPosts(t);
+  assert.equal(p.length, 1);
+  assert.equal(p[0].body.body, "<!-- desk:talk -->\n禁煙の相談先を調べて\n2行目");
+  assert.equal(p[0].headers.Authorization, "Bearer " + T);
+  assert.ok(t.$("#talk-msg").textContent.includes("送りました。事業部長が読みます（返事は下に出ます）"));
+  assert.equal(t.$("#talk-note").value, "", "送ったら空にする");
+  assert.ok(!p[0].body.body.includes("desk:answer"), "答えの印は付けない");
+});
+
+test("話しかけ：空のまま送ると送らずに知らせる", async () => {
+  const t = await boot({ token: T, ...talkRoutes([]) });
+  await click(t.w, t.$('[data-talk="send"]'));
+  assert.equal(talkPosts(t).length, 0);
+  assert.ok(t.$("#talk-msg").textContent.includes("入れてください"));
+});
+
+test("話しかけ：失敗したら文を残し、もう一度送れる", async () => {
+  let n = 0;
+  const t = await boot({ token: T, ...talkRoutes([]), post: () => (++n === 1 ? json(403, { message: "x" }) : json(201, { html_url: "https://github.com/example/x/issues/5#issuecomment-9", created_at: "2030-01-02T05:00:00Z" })) });
+  t.$("#talk-note").value = "また送る";
+  await click(t.w, t.$('[data-talk="send"]'));
+  assert.ok(t.$("#talk-msg").textContent.includes("送れませんでした"));
+  assert.equal(t.$("#talk-note").value, "また送る");
+  await click(t.w, t.$('[data-talk="send"]'));
+  assert.ok(t.$("#talk-msg").textContent.includes("送りました"));
+  assert.equal(talkPosts(t).length, 2);
+});
+
+test("話しかけ：画像は先に保存してから #5 にコメント（パスとリンク入り）", async () => {
+  const t = await boot({ token: T, ...talkRoutes([]) });
+  const inp = t.$("#talk-file");
+  Object.defineProperty(inp, "files", { value: [{ name: "a.png", type: "image/png" }, { name: "b.png", type: "image/png" }], configurable: true });
+  inp.dispatchEvent(new t.w.Event("change", { bubbles: true }));
+  await settleN(t);
+  assert.equal(t.$$("#talk-imgs img").length, 2);
+  t.$("#talk-note").value = "この画面を見て";
+  await click(t.w, t.$('[data-talk="send"]'));
+  assert.equal(puts(t).length, 2);
+  assert.match(puts(t)[0].url, /\/contents\/data\/desk-images\/\d{4}-\d\d-\d\d\/talk\/\d{6}-1\.jpg$/);
+  assert.deepEqual(t.calls.filter((c) => c.method === "PUT" || c.method === "POST").map((c) => c.method), ["PUT", "PUT", "POST"]);
+  const b = talkPosts(t)[0].body.body;
+  assert.ok(b.startsWith("<!-- desk:talk -->\nこの画面を見て\n\n画像 2 枚"), b);
+  assert.ok(b.includes("https://github.com/Yoshiki0423/app-company/blob/main/data/desk-images/"));
+});
+
+test("話しかけ：最近のやり取りを新しい順に並べる。毎日の報告は畳み、社長の言葉に混ぜない", async () => {
+  const long = "【事業部長】毎日の報告\n" + "長い報告 ".repeat(100);
+  const list = [
+    mgr(long, "2030-01-01T09:00:00Z"),
+    { user: { login: "Yoshiki0423" }, body: "<!-- desk:talk -->\n一つ目の相談", created_at: "2030-01-01T10:00:00Z", html_url: "" },
+    mgr("【事業部長】一つ目への返事です", "2030-01-01T11:00:00Z"),
+    { user: { login: "Yoshiki0423" }, body: "<!-- desk:talk -->\n二つ目の相談", created_at: "2030-01-02T01:00:00Z", html_url: "" },
+    mgr(long, "2030-01-02T02:00:00Z")
+  ];
+  const t = await boot({ token: T, ...talkRoutes(list) });
+  const txt = t.$("#talk-list").textContent;
+  assert.ok(txt.indexOf("二つ目の相談") < txt.indexOf("一つ目の相談"), "新しい順");
+  assert.ok(txt.includes("一つ目への返事です"));
+  assert.ok(!txt.includes("desk:talk"), "印は見せない");
+  const reports = [...t.$$("#talk-list .turn")].filter((x) => x.textContent.includes("毎日の報告"));
+  assert.equal(reports.length, 2);
+  for (const r of reports) {
+    assert.ok(r.querySelector("details"), "長い報告は畳む");
+    assert.ok(!r.textContent.includes("相談"), "報告は社長の言葉と混ざらない");
+  }
+  assert.ok(t.$$("#talk-list .turn")[0].textContent.includes("毎日の報告"), "いちばん新しい報告が先頭");
+});
+
+test("話しかけ：返事が無い最新の相談には返事待ちと出す。往復は5件まで、古い方は畳む", async () => {
+  const list = [];
+  for (let i = 1; i <= 7; i++) list.push({ user: { login: "Yoshiki0423" }, body: "<!-- desk:talk -->\n相談" + i, created_at: "2030-01-0" + i + "T01:00:00Z", html_url: "" });
+  const t = await boot({ token: T, ...talkRoutes(list) });
+  const all = t.$("#talk-list").textContent;
+  assert.ok(all.includes("相談7") && all.includes("相談3") && !all.includes("相談2"), "5往復まで");
+  assert.ok(t.$("#talk-list .turn").textContent.includes("まだ返事はありません"));
+  assert.ok(t.$("#talk-list > details"), "古い方は畳む");
+});
+
+test("話しかけ：コメントが多い #5 は最後のページから読む。読めなくても送る欄は使える", async () => {
+  const seen = [];
+  const t = await boot({ token: T, issue: () => json(200, { comments: 250 }), comments: (n, page) => { if (n === 5) seen.push(page); return json(200, page === 3 ? [{ user: { login: "Yoshiki0423" }, body: "<!-- desk:talk -->\n最後のページ", created_at: "2030-01-02T01:00:00Z" }] : []); } });
+  assert.equal(seen[0], 3, "最後のページから");
+  assert.ok(t.$("#talk-list").textContent.includes("最後のページ"));
+  const t2 = await boot({ token: T, issue: () => json(403, { message: "x" }) });
+  assert.ok(t2.$("#talk-list").textContent.includes("やり取りを読めませんでした"));
+  assert.ok(t2.$('[data-talk="send"]'), "送る欄は使える");
+});
+
+test("話しかけ：依頼への答えの判定には影響しない（desk:talk は答え済みに数えない）", async () => {
+  const t = await boot({ token: T, comments: (n) => json(200, n === 11 ? [{ user: { login: "Yoshiki0423" }, body: "<!-- desk:talk -->\n相談", created_at: "2030-01-02T04:00:00Z" }] : []) });
+  assert.equal(t.$$(".pill.good:not([hidden])").length, 0, "答え済みは0件");
+  assert.equal(blkN(t), "3件", "止めているものの件数は変わらない");
 });
