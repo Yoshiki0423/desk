@@ -205,7 +205,7 @@
     try { d = JSON.parse(await res.text()); } catch (e) { return { state: "error", reason: "desk-likes.json が JSON として読めませんでした" }; }
     if (!d || typeof d !== "object" || !Array.isArray(d.items)) return { state: "error", reason: "desk-likes.json の形が違います（items が要ります）" };
     return { state: "ok", date: String(d.date || ""), commentUrl: d.commentUrl || "", removed: d.removed, follow: d.follow ? String(d.follow) : "",
-      items: d.items.filter((x) => x && x.quote && x.url) };
+      items: d.items.filter((x) => x && x.url) };
   }
 
   /* 全部読む。desk.json が読めなければ全体が失敗。リレーとコメントは、読めなかったことを画面に出して進める */
@@ -770,7 +770,7 @@
     if (folded) return `<section class="panel folded" id="likes">${headBtn}</section>`;
     const items = rows.map(({ x, href }) => {
       const done = href && likeMark(key(href));
-      const q = `<div class="like-q">「${esc(String(x.quote).replace(/^[「『]|[」』]$/g, ""))}」</div>${x.note ? `<div class="src">${esc(x.note)}</div>` : ""}`;
+      const q = `<div class="like-q">${x.note ? esc(String(x.note)) : "（一言なし）"}</div>`;  // 投稿の文面（quote）は X の規約で出さない。ファイルに入っていても読まない
       const act = !href ? `<span class="unk">リンクの形が開けないものだったので外しました</span>`
         : done ? `<div class="like-row"><span class="like-done">済み</span><button type="button" class="btn like-undo" data-like-undo="${esc(href)}">戻す</button></div>`
         : `<a class="btn like-go" href="${esc(href)}" data-like-go="1" target="_blank" rel="noopener noreferrer">いいねを押す（X が開きます）</a>`;

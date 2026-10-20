@@ -7,8 +7,8 @@ const T = "github_pat_TEST_FAKE";
 const likes = (date) => ({
   version: 1, date, commentUrl: "https://github.com/Yoshiki0423/app-company/issues/6#issuecomment-1",
   items: [
-    { quote: "禁煙を耐える方法ないですか", note: "助けを探している人", url: "https://x.com/intent/like?tweet_id=1" },
-    { quote: "危ない", note: "", url: "javascript:alert(1)" }
+    { quote: "これは出さない投稿の文面", note: "禁煙を我慢する方法を探している人", url: "https://x.com/intent/like?tweet_id=1" },
+    { note: "", url: "javascript:alert(1)" }
   ],
   removed: 9, follow: "無し"
 });
@@ -18,7 +18,9 @@ test("日付が今日なら候補が出る。押すリンクは新しいタブ�
   const t = await boot({ token: T, routes: withLikes(() => json(200, JSON.stringify(likes("2030-01-02")))) });
   const box = t.$("#likes");
   assert.ok(box);
-  assert.ok(box.textContent.includes("禁煙を耐える方法ないですか"));
+  assert.ok(box.textContent.includes("禁煙を我慢する方法を探している人"));
+  assert.ok(!box.textContent.includes("これは出さない投稿の文面"), "quote があっても出さない");
+  assert.ok(box.textContent.includes("（一言なし）"));
   const a = box.querySelector("a.like-go");
   assert.equal(a.getAttribute("href"), "https://x.com/intent/like?tweet_id=1");
   assert.equal(a.getAttribute("target"), "_blank");
@@ -50,8 +52,8 @@ test("JSON が壊れていても、形が違っても、画面全体は壊れな
 /* 済み・畳み */
 const two = (date) => ({
   version: 1, date, items: [
-    { quote: "一つ目", note: "", url: "https://x.com/intent/like?tweet_id=1" },
-    { quote: "二つ目", note: "", url: "https://x.com/intent/like?tweet_id=2" }
+    { note: "一つ目", url: "https://x.com/intent/like?tweet_id=1" },
+    { note: "二つ目", url: "https://x.com/intent/like?tweet_id=2" }
   ]
 });
 
