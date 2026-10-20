@@ -15,6 +15,7 @@
     owner: "Yoshiki0423",
     repo: "app-company",
     dataPath: "data/desk.json",
+    likesPath: "data/desk-likes.json",   // 今日のいいね候補（X部が書く。desk.json とは別のファイル）
     workflow: "relay.yml",
     boss: "Yoshiki0423",          // 答えを書く人（社長の GitHub アカウント）
     tokenKey: "desk.token",       // 鍵を置く localStorage の名前
@@ -195,19 +196,32 @@
     }
   }
 
+  /* 今日のいいね候補。読めなくても画面全体は止めず、「出ていません」の表示にする */
+  async function loadLikes(token) {
+    let res;
+    try { res = await gh(repoPath("/contents/" + CONFIG.likesPath), token, { accept: "application/vnd.github.raw+json" }); }
+    catch (e) { return e && e.status === 404 ? { state: "missing" } : { state: "error", reason: (e && e.message) || "" }; }
+    let d;
+    try { d = JSON.parse(await res.text()); } catch (e) { return { state: "error", reason: "desk-likes.json が JSON として読めませんでした" }; }
+    if (!d || typeof d !== "object" || !Array.isArray(d.items)) return { state: "error", reason: "desk-likes.json の形が違います（items が要ります）" };
+    return { state: "ok", date: String(d.date || ""), commentUrl: d.commentUrl || "", removed: d.removed, follow: d.follow ? String(d.follow) : "",
+      items: d.items.filter((x) => x && x.quote && x.url) };
+  }
+
   /* 全部読む。desk.json が読めなければ全体が失敗。リレーとコメントは、読めなかったことを画面に出して進める */
   async function loadAll(token) {
     const data = await loadDesk(token);
     const nums = [...new Set(data.requests.map((r) => r.issue))];
-    const [relay, ...perIssue] = await Promise.all([
+    const [relay, likes, ...perIssue] = await Promise.all([
       loadRelay(token).then((v) => ({ v }), (e) => ({ e })),
+      loadLikes(token),
       ...nums.map((n) => loadComments(token, n).then((c) => ({ n, a: findAnswers(c) }), (e) => ({ n, e })))
     ]);
     const answers = {}, unknownIssues = [];
     perIssue.forEach((x) => { if (x.e) unknownIssues.push(x.n); else answers[x.n] = x.a; });
     let relaySource = "desk";
     if (relay.v) { data.relay = { ...data.relay, ...relay.v }; relaySource = "actions"; }
-    return { data, answers, unknownIssues, relaySource, loadedAt: new Date().toISOString() };
+    return { data, likes, answers, unknownIssues, relaySource, loadedAt: new Date().toISOString() };
   }
 
   /* ============ 表示の道具（試作と同じ） ============ */
@@ -704,10 +718,32 @@
       <span class="bars" role="img" aria-label="古い順に左から。失敗${ng}回">${bars}</span><span>${esc(DATA.relay.failNote)}${src}</span></section>`;
   }
 
+  /* 今日のいいね候補。X部が data/desk-likes.json に書く。日付が今日でなければ「まだ出ていません」にして、古い候補は押させない */
+  function likesHtml() {
+    const L = LOAD && LOAD.likes;
+    if (!L) return "";
+    const today = todayNum();
+    const head = `<div class="lbl">今日のいいね候補</div>`;
+    const dn = dayNum(L.date);
+    if (L.state === "error") return `<section class="panel" id="likes">${head}<p class="src">今日の候補を読めませんでした。<span class="unk">${esc(L.reason || "原因がわかりませんでした")}</span></p></section>`;
+    if (L.state === "missing" || dn !== today) {
+      const last = L.state === "ok" && isFinite(dn) ? `最後：${mdOf(L.date)}` : "出た日はまだありません";
+      return `<section class="panel" id="likes">${head}<p class="src">今日の候補はまだ出ていません（${last}）。</p></section>`;
+    }
+    const items = L.items.map((x) => { const href = safeHref(x.url); return `<li class="like"><div class="like-q">「${esc(String(x.quote).replace(/^[「『]|[」』]$/g, ""))}」</div>${x.note ? `<div class="src">${esc(x.note)}</div>` : ""}${href ? `<a class="btn like-go" href="${esc(href)}" target="_blank" rel="noopener noreferrer">いいねを押す（X が開きます）</a>` : `<span class="unk">リンクの形が開けないものだったので外しました</span>`}</li>`; }).join("");
+    const info = [
+      L.removed != null && L.removed !== "" ? `除いたもの：${esc(L.removed)}件` : "",
+      L.follow ? `フォロー候補：${esc(L.follow)}` : "",
+      "リンクを押すと X の確認画面が出ます。飛ばしても大丈夫です"
+    ].filter(Boolean).map((t) => `<div class="src">${t}</div>`).join("");
+    const orig = safeHref(L.commentUrl) ? `<a class="src" href="${esc(safeHref(L.commentUrl))}" target="_blank" rel="noopener noreferrer">GitHub の元のコメント</a>` : "";
+    return `<section class="panel" id="likes">${head}${L.items.length ? `<ul class="likelist">${items}</ul>` : `<p class="src">今日は押す候補がありません。</p>`}${info}${orig}</section>`;
+  }
+
   function viewHtml() {
     const todo = DATA.requests.length
       ? `<section class="panel" id="todo"><div class="lbl">社長がやること</div><div id="req-slot"></div></section>` : "";
-    return verdictHtml() + `<div id="talk-slot"></div>` + todo + chartHtml() + aheadHtml() + relayHtml();
+    return verdictHtml() + `<div id="talk-slot"></div>` + likesHtml() + todo + chartHtml() + aheadHtml() + relayHtml();
   }
 
   function stampText() {
