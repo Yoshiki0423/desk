@@ -92,7 +92,7 @@
       goal: { date: "", label: "公開", outlook: "warn", outlookText: "", concern: "", ...(d.goal || {}) },
       range: d.range || null,
       timeline: d.timeline.map((g) => ({ group: "", ...g, rows: Array.isArray(g.rows) ? g.rows.map((r) => ({ segments: [], ...r })) : [] })),
-      requests: d.requests.filter((r) => r && r.id && r.answer),
+      requests: d.requests.filter((r) => r && r.id).map((r) => (r.answer ? r : { ...r, answer: { type: "ok_or_note" } })),  // 答え方が無くても黙って外さない（OK か一言で答えられる形にする）
       waiting: Array.isArray(d.waiting) ? d.waiting : [],
       upcoming: Array.isArray(d.upcoming) ? d.upcoming : [],
       relay: { recent: [], failNote: "", ...(d.relay || {}) }
