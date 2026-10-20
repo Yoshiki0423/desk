@@ -718,6 +718,31 @@
       <span class="bars" role="img" aria-label="古い順に左から。失敗${ng}回">${bars}</span><span>${esc(DATA.relay.failNote)}${src}</span></section>`;
   }
 
+  /* いいね候補の「済み」と畳み。この端末の localStorage に「日付|リンク」で残す。使えなければ、開いている間だけ覚える */
+  const LIKES_KEY = "desk.likes";
+  let likeMem = {};
+  function likeRead() { try { const o = JSON.parse(global.localStorage.getItem(LIKES_KEY) || "{}"); return o && typeof o === "object" && !Array.isArray(o) ? o : {}; } catch (e) { return {}; } }
+  function likeMark(k) { const m = Object.assign({}, likeRead(), likeMem); return m[k]; }
+  function likeSet(k, v) {
+    likeMem[k] = v;
+    const o = likeRead(); if (v == null) delete o[k]; else o[k] = v;
+    if (v == null) delete likeMem[k];
+    try { global.localStorage.setItem(LIKES_KEY, JSON.stringify(o)); } catch (e) { /* 残せなくても、開いている間は動く */ }
+  }
+  /* 今日の候補の日付以外の記録は消す（翌日に持ち越さない） */
+  function likePurge(date) {
+    const keep = (k) => String(k).startsWith(date + "|");
+    Object.keys(likeMem).forEach((k) => { if (!keep(k)) delete likeMem[k]; });
+    const o = likeRead(); let ch = false;
+    Object.keys(o).forEach((k) => { if (!keep(k)) { delete o[k]; ch = true; } });
+    if (ch) { try { global.localStorage.setItem(LIKES_KEY, JSON.stringify(o)); } catch (e) { /* 消せなくても画面は進める */ } }
+  }
+  function likeRepaint() {
+    const el = $("#likes"); if (!el) return;
+    const tmp = global.document.createElement("div"); tmp.innerHTML = likesHtml();
+    const nw = tmp.firstElementChild; if (nw) el.replaceWith(nw);
+  }
+
   /* 今日のいいね候補。X部が data/desk-likes.json に書く。日付が今日でなければ「まだ出ていません」にして、古い候補は押させない */
   function likesHtml() {
     const L = LOAD && LOAD.likes;
@@ -730,14 +755,34 @@
       const last = L.state === "ok" && isFinite(dn) ? `最後：${mdOf(L.date)}` : "出た日はまだありません";
       return `<section class="panel" id="likes">${head}<p class="src">今日の候補はまだ出ていません（${last}）。</p></section>`;
     }
-    const items = L.items.map((x) => { const href = safeHref(x.url); return `<li class="like"><div class="like-q">「${esc(String(x.quote).replace(/^[「『]|[」』]$/g, ""))}」</div>${x.note ? `<div class="src">${esc(x.note)}</div>` : ""}${href ? `<a class="btn like-go" href="${esc(href)}" target="_blank" rel="noopener noreferrer">いいねを押す（X が開きます）</a>` : `<span class="unk">リンクの形が開けないものだったので外しました</span>`}</li>`; }).join("");
+    likePurge(L.date);
+    const key = (u) => L.date + "|" + u;
+    const rows = L.items.map((x) => ({ x, href: safeHref(x.url) }));
+    const todo = rows.filter((r) => r.href);
+    const left = todo.filter((r) => !likeMark(key(r.href))).length;
+    const allDone = todo.length > 0 && left === 0;
+    const pref = likeMark(key("fold"));   // "1" 畳む / "0" 開く / 無ければ自動（全部済みなら畳む）
+    const folded = pref === "1" ? true : pref === "0" ? false : allDone;
+    const state = !todo.length ? "" : allDone ? `${todo.length}件すべて済み` : `残り${left}件`;
+    const headBtn = todo.length
+      ? `<button type="button" class="like-fold" data-like-fold="1" aria-expanded="${folded ? "false" : "true"}"><span class="lbl">今日のいいね候補</span><span class="like-state${allDone ? " done" : ""}">${state}</span><span class="like-arrow" aria-hidden="true">${folded ? "▸" : "▾"}</span></button>`
+      : head;
+    if (folded) return `<section class="panel folded" id="likes">${headBtn}</section>`;
+    const items = rows.map(({ x, href }) => {
+      const done = href && likeMark(key(href));
+      const q = `<div class="like-q">「${esc(String(x.quote).replace(/^[「『]|[」』]$/g, ""))}」</div>${x.note ? `<div class="src">${esc(x.note)}</div>` : ""}`;
+      const act = !href ? `<span class="unk">リンクの形が開けないものだったので外しました</span>`
+        : done ? `<div class="like-row"><span class="like-done">済み</span><button type="button" class="btn like-undo" data-like-undo="${esc(href)}">戻す</button></div>`
+        : `<a class="btn like-go" href="${esc(href)}" data-like-go="1" target="_blank" rel="noopener noreferrer">いいねを押す（X が開きます）</a>`;
+      return `<li class="like${done ? " is-done" : ""}">${q}${act}</li>`;
+    }).join("");
     const info = [
       L.removed != null && L.removed !== "" ? `除いたもの：${esc(L.removed)}件` : "",
       L.follow ? `フォロー候補：${esc(L.follow)}` : "",
-      "リンクを押すと X の確認画面が出ます。飛ばしても大丈夫です"
+      "リンクを押すと X の確認画面が出ます。押すと「済み」になります（X で本当に押したかは見ていません）。飛ばしても大丈夫です"
     ].filter(Boolean).map((t) => `<div class="src">${t}</div>`).join("");
     const orig = safeHref(L.commentUrl) ? `<a class="src" href="${esc(safeHref(L.commentUrl))}" target="_blank" rel="noopener noreferrer">GitHub の元のコメント</a>` : "";
-    return `<section class="panel" id="likes">${head}${L.items.length ? `<ul class="likelist">${items}</ul>` : `<p class="src">今日は押す候補がありません。</p>`}${info}${orig}</section>`;
+    return `<section class="panel" id="likes">${headBtn}${L.items.length ? `<ul class="likelist">${items}</ul>` : `<p class="src">今日は押す候補がありません。</p>`}${info}${orig}</section>`;
   }
 
   function viewHtml() {
@@ -862,8 +907,20 @@
   async function onClick(e) {
     const jl = e.target.closest("a[data-jump]");
     if (jl) { e.preventDefault(); if (DATA) jumpTo(jl.dataset.jump); return; }
+    const lg = e.target.closest("a[data-like-go]");
+    if (lg) {   // 押したら済みにする。リンクは普通に開かせ、描き直しは少し後にする
+      const L = LOAD && LOAD.likes;
+      if (L && L.date) likeSet(L.date + "|" + safeHref(lg.getAttribute("href")), "1");
+      global.setTimeout(likeRepaint, 0); return;
+    }
     const t = e.target.closest("button"); if (!t) return;
     const ds = t.dataset;
+    if (ds.likeUndo != null || ds.likeFold != null) {
+      const L = LOAD && LOAD.likes; if (!L || !L.date) return;
+      if (ds.likeUndo != null) likeSet(L.date + "|" + ds.likeUndo, null);
+      else { const folded = t.getAttribute("aria-expanded") === "false"; likeSet(L.date + "|fold", folded ? "0" : "1"); }
+      likeRepaint(); return;
+    }
     const reqOf = (id) => DATA && DATA.requests.find((r) => r.id === id);
     if (ds.act === "reload") return reload();
     if (ds.act === "forget") {

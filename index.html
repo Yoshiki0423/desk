@@ -133,6 +133,14 @@ details>summary{cursor:pointer;color:var(--me);font-size:13px;min-height:32px;di
 #likes p{margin:0}
 .likelist{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:10px}
 .like{display:flex;flex-direction:column;gap:4px;border-top:1px solid var(--line);padding-top:10px}
+.like.is-done{opacity:.55}
+.like-row{display:flex;align-items:center;gap:12px}
+.like-done{font-weight:700;color:var(--sub)}
+.like .like-undo{flex:none;min-height:40px;padding:0 16px}
+.like-fold{display:flex;align-items:center;gap:10px;width:100%;min-height:44px;margin:-6px 0 4px;padding:0;background:none;border:0;color:inherit;font:inherit;cursor:pointer;text-align:left}
+.panel.folded .like-fold{margin:-6px 0}
+.like-state{font-size:13px;font-weight:700}
+.like-arrow{margin-left:auto;color:var(--sub)}
 .like:first-child{border-top:0;padding-top:0}
 .like-q{font-size:14px;overflow-wrap:anywhere}
 .like .like-go{flex:none;align-self:flex-start;padding:0 16px;text-decoration:none;display:inline-flex;align-items:center;min-height:40px;max-width:100%}
@@ -197,6 +205,6 @@ details>summary{cursor:pointer;color:var(--me);font-size:13px;min-height:32px;di
   <div id="notice" role="status"></div>
   <main id="view"></main>
 </div>
-<script src="app.js?v=5"></script>
+<script src="app.js?v=6"></script>
 </body>
 </html>
