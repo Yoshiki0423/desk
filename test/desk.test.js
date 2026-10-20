@@ -19,7 +19,7 @@ test("鍵が無いと、作り方の案内（番号つき8手順と3つの権限
   assert.ok(t.$("#setup"));
   assert.equal(t.$$("#key-steps li").length, 8);
   const all = t.$("#key-steps").textContent;
-  for (const s of ["Only select repositories", "app-company", "Issues を「Read and write」", "Contents を「Read-only」", "Actions を「Read-only」"]) assert.ok(all.includes(s), s);
+  for (const s of ["Only select repositories", "app-company", "Issues を「Read and write」", "Contents を「Read and write」", "Actions を「Read-only」"]) assert.ok(all.includes(s), s);
   assert.equal(t.calls.length, 0);
   assert.equal(t.$("#tools").hidden, true);
 });

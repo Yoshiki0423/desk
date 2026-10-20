@@ -576,7 +576,7 @@
         <li>「Resource owner」は Yoshiki0423 のままにする</li>
         <li>「Expiration」（期限）を選ぶ。おすすめは 90 days。期限が切れたらこの画面がそう知らせるので、同じ手順で作り直す</li>
         <li>「Repository access」で「Only select repositories」を選び、app-company だけを選ぶ</li>
-        <li>「Permissions」の「Repository permissions」で、次の3つだけを変える。Issues を「Read and write」、Contents を「Read-only」、Actions を「Read-only」（Metadata は自動で「Read-only」になる。ほかは触らない）</li>
+        <li>「Permissions」の「Repository permissions」で、次の3つだけを変える。Issues を「Read and write」、Contents を「Read and write」（答えに画像を付けるため）、Actions を「Read-only」（Metadata は自動で「Read-only」になる。ほかは触らない）</li>
         <li>いちばん下の「Generate token」を押し、出てきた鍵（github_pat_ で始まる長い文字）をコピーする。画面を閉じると二度と表示されない</li>
         <li>下の欄に貼って「保存して開く」を押す</li>
       </ol>
