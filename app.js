@@ -720,7 +720,7 @@
   }
 
   global.Desk = {
-    CONFIG, findAnswers, buildBody, relayFromRuns, normalize, safeHref, resolveSegments,
+    CONFIG, shrinkImage, imagePath, findAnswers, buildBody, relayFromRuns, normalize, safeHref, resolveSegments,
     started: null,
     start() { this.started = start(); return this.started; }
   };
