@@ -12,7 +12,7 @@ const bossComment = (id, text, at, login) => ({
   html_url: "https://github.com/example/x/issues/11#comment-50"
 });
 const openReq = async (t, id) => { await click(t.w, t.$(`[data-toggle="${id}"]`)); };
-const tabTexts = (t) => t.$$("#tabs .tab").map((b) => b.textContent);
+const blkN = (t) => t.$("#blkN").textContent;   // 「社長が止めているもの」の件数
 
 test("鍵が無いと、作り方の案内（番号つき8手順と3つの権限）が出て、GitHub は呼ばない", async () => {
   const t = await boot({});
@@ -34,7 +34,7 @@ test("鍵を貼って保存すると localStorage に入り、desk.json を読�
   assert.equal(d.headers.Authorization, "Bearer " + T);
   assert.equal(d.headers.Accept, "application/vnd.github.raw+json");
   assert.ok(t.calls.every((c) => c.url.startsWith("https://api.github.com/")), "GitHub 以外に送らない");
-  assert.deepEqual(tabTexts(t), ["全体3", "#11 架空アプリ2", "#12 マーケ1"]);
+  assert.equal(blkN(t), "3件");
   assert.equal(t.$$("#req-slot .req").length, 3);
 });
 
@@ -57,7 +57,7 @@ test("リレーの成否は Actions の実行履歴から取る（実行中・�
   const t = await boot({ token: T, runs: () => json(200, { workflow_runs: runs }) });
   const txt = t.$("#view").textContent;
   assert.ok(txt.includes("リレー直近3回"), txt);
-  assert.ok(txt.includes("2/ 3 成功"));
+  assert.ok(txt.includes("2 / 3 成功"));
   assert.ok(txt.includes("GitHub の実行履歴より"));
   assert.ok(t.calls.some((c) => c.url === `${API}/actions/workflows/relay.yml/runs?per_page=20`));
 });
@@ -81,7 +81,7 @@ test("答え済みの判定：社長の印つきコメントだけを数える�
   assert.equal(t.$('[id="req-11-posts-sentpill"]').hidden, false);
   assert.equal(t.$('[id="req-11-choice-sentpill"]').hidden, true);
   assert.ok(t.$('[id="req-11-posts-zone"]').textContent.includes("回答済み"));
-  assert.deepEqual(tabTexts(t), ["全体2", "#11 架空アプリ1", "#12 マーケ1"]);
+  assert.equal(blkN(t), "2件");
 });
 
 test("答え済みの判定：コメントが100件を超えても次のページまで読む", async () => {
@@ -116,7 +116,7 @@ test("書き込みの本文：OK だけ → 先頭に印、次の行に OK", asy
   assert.deepEqual(p.body, { body: "<!-- desk:answer req-11-posts -->\nOK" });
   assert.ok(t.$('[id="req-11-posts-zone"]').textContent.includes("送りました"));
   assert.equal(t.$('[id="req-11-posts-sentpill"]').hidden, false);
-  assert.equal(tabTexts(t)[0], "全体2");
+  assert.equal(blkN(t), "2件");
 });
 
 test("書き込みの本文：直したい投稿と一言（番号順に並ぶ）", async () => {
@@ -159,7 +159,7 @@ test("書き込みに失敗したら、その旨と「もう一度送る」を�
   assert.ok(zone.textContent.includes("送れませんでした"));
   assert.ok(zone.querySelector('[role="alert"]'));
   assert.equal(t.$('[id="req-11-posts-sentpill"]').hidden, true);
-  assert.equal(tabTexts(t)[0], "全体3", "失敗したものは未回答のまま");
+  assert.equal(blkN(t), "3件", "失敗したものは未回答のまま");
   await click(t.w, t.$('[data-retry="req-11-posts"]'));
   const posts = t.calls.filter((c) => c.method === "POST");
   assert.equal(posts.length, 2);
@@ -216,12 +216,130 @@ test("javascript: などのリンクは押せる形にしない", async () => {
   assert.ok(!hrefs.some((h) => /^javascript:/i.test(h)));
 });
 
-test("Issue の切り替え：#11 を押すとその分だけになり、答えが要る依頼は開いている", async () => {
+/* ---- 線表の画面 ---- */
+const seg = (t, row, name) => t.$$(`.row[data-row="${row}"] .seg`).find((e) => e.textContent === name);
+const pctOf = (el, prop) => parseFloat(el.style[prop]);
+
+test("上の結論：公開まであと何日と、止めているものの件数・見込み", async () => {
   const t = await boot({ token: T });
-  await click(t.w, t.$('#tabs [data-go="i11"]'));
-  assert.equal(t.$$("#req-slot .req").length, 2);
-  assert.equal(t.$('[data-toggle="req-11-posts"]').getAttribute("aria-expanded"), "true");
-  assert.equal(t.w.location.hash, "#i11");
+  const v = t.$(".verdict").textContent;
+  assert.ok(v.includes("30日"), v);                 // 2030-01-02 から 2030-02-01
+  assert.ok(v.includes("公開（2/1）まで"));
+  assert.ok(v.includes("架空の見込み"));
+  assert.ok(v.includes("架空の心配"));
+  assert.equal(blkN(t), "3件");
+  const jumps = t.$$("#blkP [data-jump]").map((a) => a.textContent);
+  assert.deepEqual(jumps, ["架空の投稿 →", "架空の確認 →", "架空のリンク →"]);
+});
+
+test("公開日を過ぎたら、日数ではなく「日過ぎた」と出す", async () => {
+  const t = await boot({ token: T, today: "2030-02-03" });
+  assert.ok(t.$(".verdict").textContent.includes("2日過ぎた"));
+});
+
+test("線表：作る・広めるの行と、区間の状態（済み・いま・予定・日付未定）と外の返事待ち", async () => {
+  const t = await boot({ token: T });
+  assert.deepEqual(t.$$(".grp").map((e) => e.textContent), ["作る", "広める"]);
+  assert.deepEqual(t.$$(".row").map((e) => e.dataset.row), ["app11", "mk12", "quiet"]);
+  assert.ok(seg(t, "app11", "開発").classList.contains("done"));
+  assert.ok(seg(t, "app11", "確認").classList.contains("now"));
+  assert.ok(seg(t, "app11", "準備").classList.contains("undated"));
+  assert.ok(seg(t, "app11", "審査").classList.contains("plan"));
+  assert.ok(seg(t, "app11", "審査").classList.contains("waitb"), "外の返事待ちの印");
+  assert.ok(!seg(t, "app11", "準備").classList.contains("waitb"));
+  assert.ok(t.$(".row[data-row=quiet] .track").textContent.trim() === "", "区間が無い行は空");
+});
+
+test("線表：横の位置は日付どおり（範囲 1/1〜2/11 の 41日）で、終わりの無い区間は前後からつながる", async () => {
+  const t = await boot({ token: T });
+  const day = 100 / 41;
+  const kai = seg(t, "app11", "確認");            // 1/2 から、終わりが無い「いま」→ 今日から7日先（1/9）まで
+  assert.ok(Math.abs(pctOf(kai, "left") - 1 * day) < 0.05);
+  assert.ok(Math.abs(pctOf(kai, "width") - 7 * day) < 0.05);
+  const jun = seg(t, "app11", "準備");            // 始まり無し → 前の終わり（1/9）、終わりは 1/20
+  assert.ok(Math.abs(pctOf(jun, "left") - 8 * day) < 0.05);
+  assert.ok(Math.abs(pctOf(jun, "left") + pctOf(jun, "width") - 19 * day) < 0.05);
+  const today = t.$(".vline.today"), goal = t.$(".vline.goal");
+  assert.ok(Math.abs(pctOf(today, "left") - 1 * day) < 0.05);
+  assert.ok(Math.abs(pctOf(goal, "left") - 31 * day) < 0.05);
+  assert.equal(t.$(".vlab.goal").textContent, "公開");
+});
+
+test("線表の行：止めている依頼がある行だけ「社長」の印が付き、答えると印が消えて件数も減る", async () => {
+  const t = await boot({ token: T });
+  assert.ok(t.$(".row[data-row=app11] .badge"));
+  assert.ok(t.$(".row[data-row=app11] .nm").classList.contains("me"));
+  assert.ok(t.$(".row[data-row=mk12] .badge"));
+  assert.ok(!t.$(".row[data-row=quiet] .badge"));
+  assert.ok(t.$(".row[data-row=quiet] .nm").classList.contains("ok"));
+  // app11 の依頼は2つ。1つ答えても、もう1つが残る間は印が残る
+  await openReq(t, "req-11-posts");
+  await click(t.w, t.$('[data-send="req-11-posts|ok"]'));
+  assert.ok(t.$(".row[data-row=app11] .badge"));
+  assert.equal(blkN(t), "2件");
+  await openReq(t, "req-11-choice");
+  await click(t.w, t.$('[data-choice="req-11-choice|ある"]'));
+  await click(t.w, t.$('[data-send="req-11-choice|choice"]'));
+  assert.ok(!t.$(".row[data-row=app11] .badge"), "答え切ったので印は消える");
+  assert.ok(t.$(".row[data-row=app11] .nm").classList.contains("ok"));
+  assert.equal(blkN(t), "1件");
+});
+
+test("飛べる：線表の「社長」の印と、上の件数の下のリンクから、その依頼の答える欄が開く", async () => {
+  const t = await boot({ token: T });
+  assert.equal(t.$('[data-toggle="req-12-links"]').getAttribute("aria-expanded"), "false");
+  await click(t.w, t.$(".row[data-row=mk12] .badge"));
+  assert.equal(t.$('[data-toggle="req-12-links"]').getAttribute("aria-expanded"), "true");
+  assert.ok(t.$('[id="req-12-links"]').classList.contains("flash"));
+  assert.ok(!t.$('[id="req-12-links-body"]').hidden);
+  await click(t.w, t.$('#blkP [data-jump="req-11-choice"]'));
+  assert.equal(t.$('[data-toggle="req-11-choice"]').getAttribute("aria-expanded"), "true");
+  assert.equal(t.w.document.activeElement.dataset.toggle, "req-11-choice", "開いた依頼に移る");
+});
+
+test("止めているものが0件なら「いまはなし」で、「社長がやること」の欄は出ない", async () => {
+  const f = fixture(); f.requests = [];
+  const t = await boot({ token: T, desk: () => json(200, JSON.stringify(f)) });
+  assert.equal(blkN(t), "0件");
+  assert.ok(t.$("#blkP").textContent.includes("いまはなし"));
+  assert.equal(t.$("#todo"), null);
+  assert.ok(!t.$(".badge"));
+  assert.equal(t.$$(".row").length, 3, "線表は出る");
+});
+
+test("全部答え済みなら0件になり、答え済みの依頼カードは残る", async () => {
+  const comments = (n) => json(200, n === 11 ? [bossComment("req-11-posts", "OK"), bossComment("req-11-choice", "ある")]
+    : n === 12 ? [bossComment("req-12-links", "OK")] : []);
+  const t = await boot({ token: T, comments });
+  assert.equal(blkN(t), "0件");
+  assert.equal(t.$$("#req-slot .req").length, 3);
+  assert.ok(!t.$(".badge"));
+});
+
+test("この先の予定と、返事待ち（社長の操作はいらない）が別の欄で出る", async () => {
+  const t = await boot({ token: T });
+  const txt = t.$("#view").textContent;
+  assert.ok(txt.includes("この先の予定") && txt.includes("1/5") && txt.includes("架空の予定"));
+  assert.ok(txt.includes("返事待ち（社長の操作はいらない）") && txt.includes("架空の返事待ち"));
+  assert.ok(!t.$("#blkP").textContent.includes("返事待ち"), "返事待ちは「止めているもの」に数えない");
+});
+
+test("古い形の desk.json（issues があり timeline が無い）は、そう伝えて落ちない", async () => {
+  const old = { issues: [], requests: [], depts: [] };
+  const t = await boot({ token: T, desk: () => json(200, JSON.stringify(old)) });
+  assert.ok(t.$("#notice").textContent.includes("まだ古い形"));
+  assert.ok(t.$("#tools") && !t.$("#tools").hidden);
+});
+
+test("区間の日付の決め方：始まり無し＝前の終わり／終わり無し＝次の始まり（無ければ公開日）", async () => {
+  const Desk = (await boot({})).w.Desk;
+  const r = { segments: [{ name: "a", from: "2030-01-01", to: "2030-01-05", state: "done" }, { name: "b", state: "undated" }, { name: "c", from: "2030-01-10", to: "2030-01-12", state: "plan" }, { name: "d", state: "undated" }] };
+  const day = (s) => Date.UTC(+s.slice(0, 4), +s.slice(5, 7) - 1, +s.slice(8, 10)) / 864e5;
+  const out = Desk.resolveSegments(r, day("2030-01-02"), day("2030-02-01"), day("2030-01-01"));
+  assert.equal(out[1].a, day("2030-01-05"));
+  assert.equal(out[1].b, day("2030-01-10"));
+  assert.equal(out[3].a, day("2030-01-12"));
+  assert.equal(out[3].b, day("2030-02-01"));
 });
 
 test("入れ物に会社のデータや鍵を持たない（鍵らしき文字や Issue のコメントの URL が無い）", () => {

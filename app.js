@@ -4,7 +4,8 @@
  *   リレーの成否 … Actions API（読めなければ desk.json の値）
  *   答え済みの判定 … 各 Issue のコメントに、社長が書いた「<!-- desk:answer 依頼のid -->」があるか
  *   答える … Issue のコメントとして書き込む（社長の鍵なので、書いた人は社長になる）
- * 見た目と動きは試作（app-company の tools/社長の画面/index.html）と同じ。違うのは「データの取り方」と「送る」だけ。
+ * 画面は「公開までの線表」（2026-10-20 に社長が方向を確定）。上に結論2つ（公開まで何日・止めているもの何件）、真ん中に線表、下に予定と返事待ち。
+ * 止めているもの＝desk.json の requests[]。件数のリンクと線表の行の「社長」の印から、答える欄へ飛ぶ。
  */
 (function (global) {
   "use strict";
@@ -73,20 +74,23 @@
 
   /* 欠けている欄があっても画面が落ちないように、空の値で埋める */
   function normalize(d) {
-    if (!d || typeof d !== "object" || !Array.isArray(d.requests) || !Array.isArray(d.issues)) {
-      throw new ApiError(-1, "desk.json の形が違います（issues と requests が要ります）");
+    if (d && typeof d === "object" && Array.isArray(d.issues) && !Array.isArray(d.timeline)) {
+      throw new ApiError(-1, "desk.json がまだ古い形です（線表の timeline がありません）。事業部長が新しい形に書き直すと表示されます");
+    }
+    if (!d || typeof d !== "object" || !Array.isArray(d.requests) || !Array.isArray(d.timeline)) {
+      throw new ApiError(-1, "desk.json の形が違います（timeline と requests が要ります）");
     }
     return {
+      version: d.version || 2,
       asOf: d.asOf || null,
       sourceNote: d.sourceNote || "",
-      issues: d.issues.map((i) => ({ recent: [], phase: "", ...i })),
-      desk: d.desk || null,
+      goal: { date: "", label: "公開", outlook: "warn", outlookText: "", concern: "", ...(d.goal || {}) },
+      range: d.range || null,
+      timeline: d.timeline.map((g) => ({ group: "", ...g, rows: Array.isArray(g.rows) ? g.rows.map((r) => ({ segments: [], ...r })) : [] })),
       requests: d.requests.filter((r) => r && r.id && r.answer),
-      depts: Array.isArray(d.depts) ? d.depts.map((x) => ({ issues: [], ...x })) : [],
-      relay: { recent: [], failNote: "", ...(d.relay || {}) },
-      events: Array.isArray(d.events) ? d.events.map((e) => ({ issues: [], ...e })) : [],
-      nextTile: d.nextTile || { num: "—", unit: "", sub: "予定の記録なし" },
-      held: Array.isArray(d.held) ? d.held.map((h) => ({ issues: [], ...h })) : []
+      waiting: Array.isArray(d.waiting) ? d.waiting : [],
+      upcoming: Array.isArray(d.upcoming) ? d.upcoming : [],
+      relay: { recent: [], failNote: "", ...(d.relay || {}) }
     };
   }
 
@@ -165,14 +169,12 @@
     const d = new Date(t + 9 * 3600e3);
     return `${d.getUTCMonth() + 1}/${d.getUTCDate()} ${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`;
   };
-  const STATUS = { run: ["動いている", "good"], boss: ["社長待ち", "warn"], wait: ["ほか待ち", "acc"], idle: ["出番待ち", "idle"], unk: ["未確認", "bad"] };
 
   let DATA = null;              // いま表示している中身（loadAll の結果の data）
   let LOAD = null;              // いちばん新しい読み込みの結果
   let lastOk = null;            // 最後に読み込めた時刻
   let state = {};               // 依頼ごとの入力と送信の状態
   const nodes = new Map();      // 依頼カードは読み込みごとに1回だけ作り、切り替えでは使い回す
-  let view = "all";
 
   function realHtml(r) {
     let h = "";
@@ -315,111 +317,129 @@
     return deliver(r, text);
   }
 
-  /* ---------- 集計（試作と同じ） ---------- */
-  const reqsFor = (v) => (v === "all" ? DATA.requests : DATA.requests.filter((r) => r.issue === +v.slice(1)));
-  const openOf = (list) => list.filter((r) => !state[r.id].sent);
-  const cnt = (list) => { const o = openOf(list); return { need: o.filter((r) => r.urgency === "need").length, ask: o.filter((r) => r.urgency !== "need").length }; };
-  const issueList = (list) => { const m = {}; list.forEach((r) => { m[r.issue] = (m[r.issue] || 0) + 1; }); return Object.keys(m).map((k) => `#${k} ${m[k]}件`).join("・") || "なし"; };
-  const deptFor = (d, n) => { const l = d.lines && d.lines[n]; return l ? { ...d, ...l } : d; };
-  const tile = (label, num, unit, sub, cls) => `<div class="tile ${cls || ""}"><div class="t-label">${esc(label)}</div><div class="t-num">${esc(num)}<small>${esc(unit)}</small></div><div class="t-sub">${sub}</div></div>`;
+  /* ---------- 日付（日本時間の「日」で数える） ---------- */
+  const DAY = 864e5;
+  const dayNum = (s) => { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(s || "")); return m ? Date.UTC(+m[1], +m[2] - 1, +m[3]) / DAY : NaN; };
+  const todayNum = () => {
+    const o = global.DESK_TODAY;   // テスト用に今日を決められる
+    if (o && isFinite(dayNum(o))) return dayNum(o);
+    return Math.floor((Date.now() + 9 * 3600e3) / DAY);
+  };
+  const md = (n) => { const d = new Date(n * DAY); return `${d.getUTCMonth() + 1}/${d.getUTCDate()}`; };
+  const mdOf = (s) => (isFinite(dayNum(s)) ? md(dayNum(s)) : esc(s));
 
-  /* ---------- 部品（試作と同じ） ---------- */
-  function deptsHtml(list, n) {
-    if (!list.length) return `<div class="empty">この Issue に関係する部署の記録はありません。</div>`;
-    return `<ul class="depts">${list.map((x0) => { const x = n ? deptFor(x0, n) : x0; const [t, c] = STATUS[x.status] || STATUS.unk; return `<li class="dept"><b>${esc(x.name)}</b><span class="pill ${c}">${t}</span><p>${esc(x.line)}</p>${x.at ? `<time datetime="${esc(x.at)}">${jst(x.at)} の動き</time>` : `<time>時刻は未確認</time>`}</li>`; }).join("")}</ul>`;
-  }
-  function evHead(e) {
-    if (e.every) return e.every;
-    const date = String(e.date || "");
-    if (date.length === 10) { const [, m, dd] = date.split("-"); const wd = "日月火水木金土"[new Date(date + "T00:00:00Z").getUTCDay()] || "?"; return `${+m}/${+dd}（${wd}）`; }
-    const [y, m] = date.split("-"); return m ? `${y}年${+m}月` : date;
-  }
-  function eventsHtml(list) {
-    if (!list.length) return `<div class="empty">この Issue の予定は記録にありません。全体の予定は「全体」で見られます。</div>`;
-    return `<ul class="events">${list.map((e) => `<li class="ev"><div class="when">${esc(evHead(e))}<small>${esc(e.sub || "")}</small></div><div><p>${esc(e.text)}</p><span class="by">出典：${esc(e.by)}</span></div></li>`).join("")}</ul>`;
-  }
-  function heldHtml(list) {
-    if (!list.length) return `<div class="empty">この Issue で溜めているものは記録にありません。</div>`;
-    return `<ul class="queue">${list.map((h) => `<li>${esc(h.text)}<small>${h.issues.length ? "#" + h.issues.map(esc).join("・#") + "・" : ""}${esc(h.when)}</small></li>`).join("")}</ul>`;
-  }
-  const sec = (id, title, small, body) => `<section id="${id}"><div class="sec-h"><h2>${esc(title)}</h2>${small ? `<small>${small}</small>` : ""}</div>${body}</section>`;
-
-  function issueState(iss) {
-    const c = cnt(reqsFor("i" + iss.n));
-    if (c.need) return ["答えが要る " + c.need + "件", "warn"];
-    if (c.ask) return ["お願い " + c.ask + "件", "acc"];
-    return ["社長待ちなし", "good"];
+  /* 線表の1行ぶんの区間に、描く位置（日数）を決める。
+   * 始まりが無ければ前の区間の終わり。終わりが無ければ、「いま」は今日から7日先まで、それ以外は次の区間の始まり（無ければ公開日）まで。 */
+  function resolveSegments(row, today, goalN, startN) {
+    const segs = row.segments || [];
+    const out = [];
+    let prevEnd = startN;
+    segs.forEach((s, i) => {
+      let a = dayNum(s.from), b = dayNum(s.to);
+      if (!isFinite(a)) a = prevEnd;
+      if (!isFinite(b)) {
+        if (s.state === "now") b = Math.max(a, today) + 7;
+        else { const nx = dayNum((segs[i + 1] || {}).from); b = isFinite(nx) ? nx : goalN; }
+      }
+      out.push({ ...s, a, b });
+      prevEnd = b;
+    });
+    return out;
   }
 
-  function overviewHtml() {
-    const d = DATA, all = openOf(d.requests), c = cnt(d.requests);
-    const needL = all.filter((r) => r.urgency === "need"), askL = all.filter((r) => r.urgency !== "need");
-    const by = (s) => d.depts.filter((x) => x.status === s).length;
-    const rel = d.relay.recent, ng = rel.filter((x) => x[0] === "!").length;
+  const blocking = (rowId) => DATA.requests.filter((r) => r.row === rowId && !state[r.id].sent);
+  const openAll = () => DATA.requests.filter((r) => !state[r.id].sent);
+  const STATE_JA = { done: "済み", now: "いま", plan: "予定", undated: "日付未定" };
+  const LEVELS = ["ok", "warn", "stop"];
+
+  /* ---------- 部品 ---------- */
+  function verdictHtml() {
+    const g = DATA.goal, today = todayNum(), gn = dayNum(g.date);
+    const left = isFinite(gn) ? gn - today : null;
+    const open = openAll();
+    const days = left === null ? `<div class="big">—</div>`
+      : left >= 0 ? `<div class="big">${left}<small>日</small></div>` : `<div class="big" style="color:var(--stop)">${-left}<small>日過ぎた</small></div>`;
+    const lvl = LEVELS.includes(g.outlook) ? g.outlook : "warn";
+    const concern = g.concern ? ` 気になるのは <span class="pill ${lvl}"><span class="dot"></span>${esc(g.concern)}</span> だけ` : "";
+    const goalTxt = `<b>${esc(g.label || "公開")}（${isFinite(gn) ? mdOf(g.date) : esc(g.date)}）まで</b><br>${esc(g.outlookText || "見込みは未確認")}${concern}`;
+    const links = open.map((r) => `<a class="jump" href="#${esc(r.id)}" data-jump="${esc(r.id)}">${esc(r.short || r.title)} →</a>`).join("<br>");
+    const blk = `<div class="big" id="blkN" style="color:var(--me)">${open.length}<small>件</small></div>
+      <p id="blkP"><b>社長が止めているもの</b><br>${open.length ? links : "いまはなし"}</p>`;
+    return `<section class="panel verdict">${days}<p>${goalTxt}</p>${blk}</section>`;
+  }
+
+  function chartHtml() {
+    const today = todayNum(), gn = dayNum(DATA.goal.date);
+    const all = [];
+    DATA.timeline.forEach((g) => g.rows.forEach((r) => (r.segments || []).forEach((s) => { all.push(dayNum(s.from), dayNum(s.to)); })));
+    const finite = all.filter(isFinite);
+    const given = (k, dflt) => { const v = dayNum((DATA.range || {})[k]); return isFinite(v) ? v : dflt; };
+    const S = given("from", Math.min(today - 1, ...finite));
+    const E = given("to", Math.max(isFinite(gn) ? gn + 9 : today + 30, ...finite));
+    const span = Math.max(1, E - S);
+    const pct = (n) => (Math.min(100, Math.max(0, ((n - S) / span) * 100))).toFixed(2) + "%";
+    const wid = (a, b) => (Math.max(0, ((Math.min(E, b) - Math.max(S, a)) / span) * 100)).toFixed(2) + "%";
+    const ticks = [];
+    let t = new Date(S * DAY);
+    for (;;) {   // 月の初めに目盛り
+      t = new Date(Date.UTC(t.getUTCFullYear(), t.getUTCMonth() + 1, 1));
+      const n = t.getTime() / DAY; if (n >= E) break;
+      if (n > S) ticks.push(`<span style="left:${pct(n)}">${t.getUTCMonth() + 1}月</span>`);
+    }
+    let rowsHtml = "";
+    DATA.timeline.forEach((g) => {
+      if (g.group) rowsHtml += `<div class="grp">${esc(g.group)}</div>`;
+      g.rows.forEach((r) => {
+        const bl = blocking(r.id);
+        const st = bl.length ? "me" : (LEVELS.includes(r.status) ? r.status : "ok");
+        const segs = resolveSegments(r, today, gn, S).filter((s) => s.b > S && s.a < E && s.b > s.a);
+        const segHtml = segs.map((s) => {
+          const cls = STATE_JA[s.state] ? s.state : "plan";
+          const tip = `${s.name}（${STATE_JA[cls]}${s.wait ? "・" + s.wait : ""}）`;
+          return `<div class="seg ${cls}${s.wait ? " waitb" : ""}" style="left:${pct(s.a)};width:${wid(s.a, s.b)}" title="${esc(tip)}">${esc(s.name)}</div>`;
+        }).join("");
+        const sr = `<span class="sr">${(r.segments || []).map((s) => `${esc(s.name)}（${STATE_JA[s.state] || "予定"}${s.wait ? "・" + esc(s.wait) : ""}）`).join("、")}</span>`;
+        const badge = bl.length ? `<a class="badge" href="#${esc(bl[0].id)}" data-jump="${esc(bl[0].id)}">社長</a>` : "";
+        rowsHtml += `<div class="row" data-row="${esc(r.id)}"><div class="nm ${st}"><span class="dot"></span>${esc(r.label || r.id)}${badge}</div><div class="track">${segHtml}${sr}</div></div>`;
+      });
+    });
+    const marks = (isFinite(gn) ? [[today, "today", "今日"], [gn, "goal", DATA.goal.label || "公開"]] : [[today, "today", "今日"]]);
+    const lines = marks.filter(([n]) => n >= S && n <= E)
+      .map(([n, c, l]) => `<div class="vline ${c}" style="left:${pct(n)}"></div><div class="vlab ${c}" style="left:${pct(n)}">${esc(l)}</div>`).join("");
+    return `<section class="panel"><div class="lbl">公開までの線表</div>
+      <div class="chart"><div class="axis"><div></div><div class="ticks">${ticks.join("")}</div></div>${rowsHtml}
+        <div style="position:absolute;left:76px;right:0;top:0;bottom:0;pointer-events:none">${lines}</div></div>
+      <div class="legend">
+        <span><i style="background:var(--done)"></i>済み</span>
+        <span><i style="background:var(--now)"></i>いま</span>
+        <span><i style="border:1.5px solid var(--plan)"></i>予定</span>
+        <span><i style="background:repeating-linear-gradient(45deg,var(--plan) 0 3px,transparent 3px 7px)"></i>日付が未定</span>
+        <span><i style="box-shadow:0 0 0 2px var(--warn);background:var(--plan)"></i>外の返事待ち</span>
+      </div></section>`;
+  }
+
+  function aheadHtml() {
+    const up = DATA.upcoming.map((e) => `<div class="ag"><time>${mdOf(e.date)}</time><div>${esc(e.title)}${e.sub ? `<small>${esc(e.sub)}</small>` : ""}</div></div>`).join("");
+    const wt = DATA.waiting.map((w) => `<div><span class="dot ${LEVELS.includes(w.level) ? w.level : "warn"}"></span> ${esc(w.text)}${w.note ? `<span class="n">${esc(w.note)}</span>` : ""}</div>`).join("");
+    return `<section class="panel"><div class="lbl">この先の予定</div>
+      <div class="agenda">${up || `<div class="ag"><div>記録にある予定はありません</div></div>`}</div>
+      <div class="lbl" style="margin-top:12px">返事待ち（社長の操作はいらない）</div>
+      <div class="wait">${wt || "いまはなし"}</div></section>`;
+  }
+
+  function relayHtml() {
+    const rel = DATA.relay.recent, ng = rel.filter((x) => x[0] === "!").length;
+    if (!rel.length) return "";
     const bars = rel.slice().reverse().map((x) => `<i class="${x[0] === "!" ? "ng" : ""}"></i>`).join("");
-    const relSrc = LOAD.relaySource === "actions" ? "（GitHub の実行履歴より）" : `（<span class="unk">実行履歴が読めなかったので desk.json の記録</span>）`;
-    const tiles = `<div class="tiles n6">
-      ${tile("答えが要る", c.need, "件", esc(issueList(needL)), c.need ? "need" : "")}
-      ${tile("お願い（急ぎではない）", c.ask, "件", esc(issueList(askL)))}
-      ${tile("動いている部署", by("run"), "/ " + d.depts.length, `社長待ち ${by("boss")}・ほか待ち ${by("wait")}・出番待ち ${by("idle")}・<span class="unk">未確認 ${by("unk")}</span>`)}
-      ${tile("次の予定", d.nextTile.num, d.nextTile.unit, esc(d.nextTile.sub))}
-      ${tile("溜めているもの", d.held.length, "件", "いまは社長に聞きません")}
-      ${tile("リレー直近" + rel.length + "回", rel.length - ng, "/ " + rel.length + " 成功", `<div class="bars" role="img" aria-label="古い順に左から。失敗${ng}回">${bars}</div>${esc(d.relay.failNote)}${relSrc}`)}
-    </div>`;
-    const cards = d.issues.map((iss) => {
-      const [t, k] = issueState(iss), last = iss.recent[iss.recent.length - 1], cc = cnt(reqsFor("i" + iss.n));
-      const dn = d.depts.filter((x) => x.issues.includes(iss.n)).length;
-      const lastHtml = last ? `<div class="ic-last"><b>${jst(last.at)} ${esc(last.who)}</b>　${esc(last.text)}</div>` : "";
-      return `<button type="button" class="icard ${cc.need ? "hot" : ""}" data-go="i${esc(iss.n)}">
-        <div class="ic-top"><b>#${esc(iss.n)} ${esc(iss.name)}</b><span class="pill ${k}">${esc(t)}</span></div>
-        <div class="ic-phase">${esc(iss.phase)}</div>
-        ${lastHtml}
-        <div class="ic-foot">関係する部署 ${dn}　タップでこの Issue だけを見る</div></button>`;
-    }).join("");
-    const desk = d.desk ? `<div class="strip">#${esc(d.desk.n)} ${esc(d.desk.name)} は、この画面の元になる Issue なので「全体」に含めています。最終更新 ${jst(d.desk.updatedAt)}・コメント ${esc(d.desk.comments)}件。</div>` : "";
-    const relayNote = `<div class="relay">部署ごとの工程名は、実行履歴からは<span class="unk">未確認</span>。</div>`;
-    return tiles
-      + `<div>${sec("issues", "Issue ごとの状況", "タップで切り替え", `<div class="icards">${cards}</div>${desk}`)}</div>`
-      + `<div class="cols">
-          ${sec("todo", "社長がやること", `答えが要る ${c.need}件・お願い ${c.ask}件`, `<div class="stack" id="req-slot"></div>`)}
-          <div class="side">
-            ${sec("work", "各部署の状況", "社長は何もしなくてよい", `<div class="panel">${deptsHtml(d.depts)}${relayNote}</div>`)}
-            ${sec("next", "次の予定", "", `<div class="panel">${eventsHtml(d.events)}</div>`)}
-            ${sec("held", "溜めているもの", "いまは聞きません", `<div class="panel">${heldHtml(d.held)}</div>`)}
-          </div>
-        </div>`;
+    const src = LOAD.relaySource === "actions" ? "（GitHub の実行履歴より）" : `（<span class="unk">実行履歴が読めなかったので desk.json の記録</span>）`;
+    return `<section class="panel relay"><span class="lbl">リレー直近${rel.length}回</span><b>${rel.length - ng} / ${rel.length} 成功</b>
+      <span class="bars" role="img" aria-label="古い順に左から。失敗${ng}回">${bars}</span><span>${esc(DATA.relay.failNote)}${src}</span></section>`;
   }
 
-  function issueHtml(n) {
-    const d = DATA, iss = d.issues.find((i) => i.n === n), rs = reqsFor("i" + n), c = cnt(rs);
-    const ds = d.depts.filter((x) => x.issues.includes(n));
-    const dsRun = ds.map((x) => deptFor(x, n)).filter((x) => x.status === "run").length;
-    const evs = d.events.filter((e) => e.issues.includes(n)), hs = d.held.filter((h) => h.issues.includes(n));
-    const [st, k] = issueState(iss);
-    const tiles = `<div class="tiles n4">
-      ${tile("答えが要る", c.need, "件", c.need ? esc(rs.filter((r) => r.urgency === "need" && !state[r.id].sent).map((r) => r.dept).join("・")) : "なし", c.need ? "need" : "")}
-      ${tile("お願い（急ぎではない）", c.ask, "件", c.ask ? "飛ばしても進みます" : "なし")}
-      ${tile("関係する部署", ds.length, "部署", `動いている ${dsRun}`)}
-      ${tile("この Issue の予定", evs.length, "件", evs.length ? esc(evHead(evs[0]).replace(/（.*/, "") + " ほか") : "記録にありません")}
-    </div>`;
-    const head = `<div class="panel" style="padding:14px"><div class="tags"><span class="pill ${k}">${esc(st)}</span></div><h2 style="font-size:19px;margin-top:6px">#${esc(n)} ${esc(iss.full || iss.name)}</h2><p class="lead" style="margin:6px 0 0">${esc(iss.phase)}</p></div>`;
-    const none = `<div class="none">いま社長がやることは無し。</div>`;
-    const feed = iss.recent.length ? `<ul class="feed">${iss.recent.slice().reverse().map((x) => `<li><time datetime="${esc(x.at)}">${jst(x.at)}</time><span><b>${esc(x.who)}</b>${esc(x.text)}</span></li>`).join("")}</ul>` : `<div class="empty">記録にありません。</div>`;
-    return head + tiles
-      + `<div class="cols">
-          ${sec("todo", "社長がやること", "", rs.length ? `<div class="stack" id="req-slot"></div>` : none)}
-          <div class="side">
-            ${sec("recent", "最新の動き", "新しい順（Issue のコメントより）", `<div class="panel">${feed}</div>`)}
-            ${sec("work", "関係する部署", "", `<div class="panel">${deptsHtml(ds, n)}</div>`)}
-            ${sec("next", "予定", "", `<div class="panel">${eventsHtml(evs)}</div>`)}
-            ${sec("held", "溜めているもの", "いまは聞きません", `<div class="panel">${heldHtml(hs)}</div>`)}
-          </div>
-        </div>`;
-  }
-
-  function tabsHtml() {
-    const mk = (v, label) => { const c = cnt(reqsFor(v)), t = c.need + c.ask; return `<button type="button" class="tab" data-go="${esc(v)}" aria-pressed="${view === v}">${esc(label)}<span class="bd ${c.need ? "need" : ""}" aria-label="社長待ち ${t}件">${t}</span></button>`; };
-    return mk("all", "全体") + DATA.issues.map((i) => mk("i" + i.n, `#${i.n} ${i.short || i.name}`)).join("");
+  function viewHtml() {
+    const todo = DATA.requests.length
+      ? `<section class="panel" id="todo"><div class="lbl">社長がやること</div><div id="req-slot"></div></section>` : "";
+    return verdictHtml() + todo + chartHtml() + aheadHtml() + relayHtml();
   }
 
   function stampText() {
@@ -431,20 +451,19 @@
   function draw() {
     $("#stamp").textContent = stampText();
     if (!DATA) return;
-    $("#tabs").innerHTML = tabsHtml();
-    $("#view").innerHTML = view === "all" ? overviewHtml() : issueHtml(+view.slice(1));
+    $("#view").innerHTML = viewHtml();
     const slot = $("#req-slot");
-    if (slot) reqsFor(view).forEach((r) => {
-      const el = nodes.get(r.id);
-      if (view !== "all" && !el.dataset.touched && r.urgency === "need" && !state[r.id].sent) setOpen(el, true);
-      slot.appendChild(el);
-    });
+    if (slot) DATA.requests.forEach((r) => slot.appendChild(nodes.get(r.id)));
   }
 
-  function go(v) {
-    view = v; draw();
-    try { global.scrollTo(0, 0); } catch (e) { /* 動かなくてよい */ }
-    try { global.history.replaceState(null, "", "#" + v); } catch (e) { try { global.location.hash = v; } catch (e2) { /* 動かなくてよい */ } }
+  /* 線表の「社長」の印や上の件数から、その依頼の答える欄へ飛ぶ */
+  function jumpTo(id) {
+    const el = nodes.get(id); if (!el) return;
+    el.dataset.touched = "1"; setOpen(el, true);
+    let calm = false; try { calm = global.matchMedia("(prefers-reduced-motion: reduce)").matches; } catch (e) { /* 動かなくてよい */ }
+    try { el.scrollIntoView({ behavior: calm ? "auto" : "smooth", block: "start" }); } catch (e) { /* 動かなくてよい */ }
+    el.classList.add("flash"); global.setTimeout(() => el.classList.remove("flash"), 1600);
+    try { el.querySelector(".req-head").focus({ preventScroll: true }); } catch (e) { /* 動かなくてよい */ }
   }
 
   /* ============ 鍵が無いとき・読めなかったとき ============ */
@@ -474,7 +493,6 @@
   function showSetup(msg) {
     DATA = null; LOAD = null;
     $("#tools").hidden = true;
-    $("#tabs").innerHTML = "";
     $("#notice").innerHTML = "";
     $("#stamp").textContent = "鍵がまだありません";
     $("#view").innerHTML = setupHtml(msg);
@@ -526,14 +544,14 @@
       nodes.set(r.id, makeNode(r));
       paintZone(r);
     });
-    let h = ""; try { h = global.location.hash.replace("#", ""); } catch (e) { /* 無くてよい */ }
-    if (view === "all" || !DATA.issues.some((i) => "i" + i.n === view)) view = (h === "all" || DATA.issues.some((i) => "i" + i.n === h)) ? h : "all";
     draw();
     showPartialNotice(L);
   }
 
   /* ============ 押されたとき ============ */
   async function onClick(e) {
+    const jl = e.target.closest("a[data-jump]");
+    if (jl) { e.preventDefault(); if (DATA) jumpTo(jl.dataset.jump); return; }
     const t = e.target.closest("button"); if (!t) return;
     const ds = t.dataset;
     const reqOf = (id) => DATA && DATA.requests.find((r) => r.id === id);
@@ -551,8 +569,7 @@
       return reload();
     }
     if (!DATA) return;
-    if (ds.go) go(ds.go);
-    else if (ds.toggle) { const el = nodes.get(ds.toggle); el.dataset.touched = "1"; setOpen(el, t.getAttribute("aria-expanded") !== "true"); }
+    if (ds.toggle) { const el = nodes.get(ds.toggle); el.dataset.touched = "1"; setOpen(el, t.getAttribute("aria-expanded") !== "true"); }
     else if (ds.flag) {
       const i = ds.flag.lastIndexOf("|"), id = ds.flag.slice(0, i), n = +ds.flag.slice(i + 1), s = state[id];
       const on = !s.flags.includes(n); s.flags = on ? [...s.flags, n] : s.flags.filter((x) => x !== n);
@@ -581,7 +598,7 @@
   }
 
   global.Desk = {
-    CONFIG, findAnswers, buildBody, relayFromRuns, normalize, safeHref,
+    CONFIG, findAnswers, buildBody, relayFromRuns, normalize, safeHref, resolveSegments,
     started: null,
     start() { this.started = start(); return this.started; }
   };

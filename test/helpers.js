@@ -44,6 +44,7 @@ async function boot(opt) {
   const dom = new JSDOM(HTML, { url: "https://yoshiki0423.github.io/desk/" + (o.hash || ""), runScripts: "outside-only", pretendToBeVisual: true });
   const w = dom.window;
   if (o.token) w.localStorage.setItem("desk.token", o.token);
+  w.DESK_TODAY = o.today || "2030-01-02";   // 今日を決める（画面の日数・今日の線）
   const f = makeFetch(o.routes || standardRoutes(o));
   w.fetch = f.fetch;
   w.confirm = () => true;
