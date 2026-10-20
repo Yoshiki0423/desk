@@ -143,6 +143,12 @@ details>summary{cursor:pointer;color:var(--me);font-size:13px;min-height:32px;di
 .sent pre{margin:6px 0 0;white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;color:var(--ink);background:var(--panel);border-radius:8px;padding:8px 10px;font-size:13px}
 .sent.ng{background:var(--bad-soft);color:var(--stop)}
 .sent a{color:var(--me)}
+.imgbox{display:flex;flex-direction:column;gap:2px;align-items:flex-start}
+.imgs{display:flex;gap:8px;flex-wrap:wrap}
+.imgs:empty{display:none}
+.thumb{margin:0;position:relative;width:72px}
+.thumb img{width:72px;height:72px;object-fit:cover;border-radius:8px;border:1px solid var(--line);display:block}
+.thumb .x{width:100%;min-height:32px;margin-top:2px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--sub);font-size:12px;cursor:pointer}
 .linkbtn{background:none;border:0;color:var(--me);text-decoration:underline;cursor:pointer;padding:6px 0;min-height:32px}
 
 /* リレー・鍵・お知らせ */
@@ -172,6 +178,6 @@ details>summary{cursor:pointer;color:var(--me);font-size:13px;min-height:32px;di
   <div id="notice" role="status"></div>
   <main id="view"></main>
 </div>
-<script src="app.js?v=2"></script>
+<script src="app.js?v=3"></script>
 </body>
 </html>

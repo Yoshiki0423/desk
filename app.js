@@ -20,7 +20,12 @@
     tokenKey: "desk.token",       // 鍵を置く localStorage の名前
     perPage: 100,
     maxCommentPages: 10,          // 1つの Issue で読むコメントの上限（100件 × 10 ページ）
-    runsPerPage: 20
+    runsPerPage: 20,
+    branch: "main",
+    imageDir: "data/desk-images", // 画像の置き場（app-company の中）。data/<日付>/<依頼id>/ の下に、時刻つきの名前で置く
+    maxImages: 6,                 // 1回の答えに付けられる枚数
+    maxSide: 1600,                // 送る前に縮める長い辺（px）
+    jpegQuality: 0.82
   };
   const MARK_RE = /^\s*<!--\s*desk:answer\s+(\S+)\s*-->[ \t]*\r?\n?/;
   const RUN_FAIL = new Set(["failure", "timed_out", "startup_failure"]);
@@ -145,6 +150,46 @@
     return { url: j.html_url || "", at: j.created_at || new Date().toISOString() };
   }
 
+  /* ============ 画像（端末の中で縮めて、app-company の中に保存する） ============ */
+  const safeName = (x) => String(x).replace(/[^A-Za-z0-9._-]/g, "_");
+  const two = (n) => String(n).padStart(2, "0");
+  const jstParts = (ms) => { const d = new Date(ms + 9 * 3600e3); return { ymd: `${d.getUTCFullYear()}-${two(d.getUTCMonth() + 1)}-${two(d.getUTCDate())}`, hms: `${two(d.getUTCHours())}${two(d.getUTCMinutes())}${two(d.getUTCSeconds())}` }; };
+  /* 置き場所：data/desk-images/<日付>/<依頼id>/<時刻>-<連番>.jpg。時刻まで入れるので、同じ依頼に何度答えてもぶつからない */
+  function imagePath(id, n) { const t = jstParts(Date.now()); return `${CONFIG.imageDir}/${t.ymd}/${safeName(id)}/${t.hms}-${n}.jpg`; }
+  const imageUrl = (path) => `https://github.com/${CONFIG.owner}/${CONFIG.repo}/blob/${CONFIG.branch}/${path}`;
+  const encPath = (p) => p.split("/").map(encodeURIComponent).join("/");
+
+  /* 縮める：長い辺を maxSide に収める JPEG にする。写真は 3〜10MB あるので、そのまま送ると電波が弱いと失敗し、リポジトリも重くなる。画面の細かい文字が読める大きさは残す */
+  async function shrinkImage(file) {
+    if (typeof global.DESK_SHRINK === "function") return global.DESK_SHRINK(file);   // テスト用
+    let bmp;
+    try { bmp = await global.createImageBitmap(file); }
+    catch (e) {
+      const url = await new Promise((ok, ng) => { const fr = new global.FileReader(); fr.onload = () => ok(fr.result); fr.onerror = ng; fr.readAsDataURL(file); });
+      bmp = await new Promise((ok, ng) => { const im = new global.Image(); im.onload = () => ok(im); im.onerror = ng; im.src = url; });   // data: は CSP で許可済み
+    }
+    const w0 = bmp.width, h0 = bmp.height, k = Math.min(1, CONFIG.maxSide / Math.max(w0, h0));
+    const w = Math.max(1, Math.round(w0 * k)), h = Math.max(1, Math.round(h0 * k));
+    const c = doc.createElement("canvas"); c.width = w; c.height = h;
+    const g = c.getContext("2d"); g.fillStyle = "#fff"; g.fillRect(0, 0, w, h); g.drawImage(bmp, 0, 0, w, h);
+    const dataUrl = c.toDataURL("image/jpeg", CONFIG.jpegQuality);
+    return { dataUrl, base64: dataUrl.slice(dataUrl.indexOf(",") + 1), w, h };
+  }
+
+  async function putImage(token, img, id) {
+    const path = encPath(img.path);
+    const put = () => gh(repoPath("/contents/" + path), token, { method: "PUT", body: { message: `社長の画面：画像を保存（${id}）`, content: img.base64, branch: CONFIG.branch } });
+    try {
+      try { await put(); }
+      catch (e) { if (e.status === 409) await put(); else throw e; }   // ほかの更新とぶつかったときは1回だけやり直す
+    } catch (e) {
+      if (e.status === 422) {   // 同じ名前が既にある＝前の送信で保存済み。あることを確かめて、保存済みとして進める
+        try { await gh(repoPath("/contents/" + path + "?ref=" + CONFIG.branch), token); return; } catch (e2) { /* あると確かめられなければ元の失敗を返す */ }
+      }
+      throw e;
+    }
+  }
+
   /* 全部読む。desk.json が読めなければ全体が失敗。リレーとコメントは、読めなかったことを画面に出して進める */
   async function loadAll(token) {
     const data = await loadDesk(token);
@@ -193,12 +238,45 @@
     return h;
   }
 
+  function imgsHtml(r) {
+    const list = (state[r.id] && state[r.id].images) || [];
+    return list.map((im, i) => `<figure class="thumb"><img src="${esc(im.dataUrl)}" alt="付ける画像 ${i + 1}"><button type="button" class="x" data-rmimg="${esc(r.id)}|${i}" aria-label="画像 ${i + 1} を外す">外す</button></figure>`).join("");
+  }
+  function paintImgs(r) {
+    const box = nodes.get(r.id).querySelector(`[id="${CSS_ID(r.id)}-imgs"]`);
+    if (box) box.innerHTML = imgsHtml(r);
+  }
+  const imgMsg = (r, text) => { const m = nodes.get(r.id).querySelector(`[id="${CSS_ID(r.id)}-msg"]`); if (m) m.textContent = text; };
+
+  /* 選んだ写真を縮めて、付ける画像に加える */
+  async function addImages(r, files) {
+    const s = state[r.id];
+    const list = [...files].filter((f) => f && (/^image\//.test(f.type || "") || !f.type));
+    if (!list.length) return;
+    let bad = 0, over = 0;
+    for (const f of list) {
+      if (s.images.length >= CONFIG.maxImages) { over++; continue; }
+      try {
+        const sh = await shrinkImage(f);
+        s.imgSeq = (s.imgSeq || 0) + 1;
+        s.images.push({ dataUrl: sh.dataUrl, base64: sh.base64, path: imagePath(r.id, s.imgSeq), saved: false });
+      } catch (e) { bad++; }
+    }
+    if (!nodes.has(r.id)) return;
+    paintImgs(r);
+    const parts = [];
+    if (over) parts.push(`1回に付けられるのは ${CONFIG.maxImages} 枚までです`);
+    if (bad) parts.push(`${bad} 枚は読めませんでした`);
+    if (parts.length) imgMsg(r, parts.join("。") + "。");
+  }
+
   function answerHtml(r) {
     const a = r.answer, id = esc(r.id);
     let h = `<div class="answer" id="${id}-ans">`;
     if (a.type === "choice") h += `<div class="btnrow" role="group" aria-label="答えを選ぶ">${(a.choices || []).map((c) => `<button type="button" class="btn choice" data-choice="${id}|${esc(c)}" aria-pressed="false">${esc(c)}</button>`).join("")}</div>`;
     h += `<label class="hint" for="${id}-note">${a.type === "choice" ? "一言（任意）" : "直すなら一言（OK だけなら空でよい）"}</label>`;
     h += `<textarea id="${id}-note" class="note" rows="2" placeholder="${esc(a.notePlaceholder || "")}"></textarea>`;
+    h += `<div class="imgbox"><div class="imgs" id="${id}-imgs">${imgsHtml(r)}</div><button type="button" class="linkbtn" data-pick="${id}">画像を付ける（写真・スクリーンショット）</button><input class="sr" type="file" accept="image/*" multiple tabindex="-1" aria-hidden="true" data-file="${id}" id="${id}-file"></div>`;
     h += `<div class="btnrow">`;
     if (a.type === "choice") h += `<button type="button" class="btn primary" data-send="${id}|choice" id="${id}-go" disabled>この答えで送る</button>`;
     else h += `<button type="button" class="btn primary" data-send="${id}|ok">${esc(a.okLabel || "OK")}</button><button type="button" class="btn" data-send="${id}|note">一言を送る</button>`;
@@ -216,9 +294,11 @@
   }
 
   function failedHtml(r) {
-    const s = state[r.id];
-    return `<div class="answer"><div class="sent ng" role="alert"><b>送れませんでした。</b>${esc(s.error)}。Issue にはまだ書き込まれていない可能性が高いです。<pre>${esc(s.pending)}</pre></div>
-      <div class="btnrow"><button type="button" class="btn primary" data-retry="${esc(r.id)}">もう一度送る</button></div>
+    const s = state[r.id], n = s.images.length, done = s.images.filter((x) => x.saved).length;
+    const prog = n ? `<br>画像：${n} 枚のうち ${done} 枚は保存できました、${n - done} 枚は送れていません。答えのコメントは まだ書き込んでいません。「もう一度送る」で、送れていない分から続けます（保存できた画像は二重に保存しません）。` : "";
+    const dropBtn = s.canDrop && n ? `<button type="button" class="btn" data-dropimg="${esc(r.id)}">画像を外して、言葉だけ送る</button>` : "";
+    return `<div class="answer"><div class="sent ng" role="alert"><b>送れませんでした。</b>${esc(s.error)}。${n && s.imgFail ? "" : "Issue にはまだ書き込まれていない可能性が高いです。"}${prog}<pre>${esc(s.pending)}</pre></div>
+      <div class="btnrow"><button type="button" class="btn primary" data-retry="${esc(r.id)}">もう一度送る</button>${dropBtn}</div>
       <button type="button" class="linkbtn" data-undo="${esc(r.id)}">書き直す</button></div>`;
   }
 
@@ -291,7 +371,14 @@
     const flagged = [...(s.flags || [])].sort((a, b) => a - b).map((i) => r.posts && r.posts[i] && r.posts[i].day).filter(Boolean);
     if (flagged.length) parts.push(`直したい：${flagged.join("・")}`);
     if (note) parts.push(note);
-    return parts.join("\n");
+    return parts.join("\n") + imageLines(s);
+  }
+
+  /* 答えのコメントに入れる、画像の置き場所（リポジトリ内のパス。部署の AI はこれで画像を開く）と GitHub で開けるリンク */
+  function imageLines(s) {
+    const list = (s && s.images) || [];
+    if (!list.length) return "";
+    return `\n\n画像 ${list.length} 枚（app-company リポジトリ内に保存）：\n` + list.map((im) => `- ${im.path}\n  ${imageUrl(im.path)}`).join("\n");
   }
 
   async function deliver(r, text) {
@@ -300,11 +387,20 @@
     nodes.get(r.id).querySelectorAll("[data-send],[data-retry]").forEach((b) => { b.disabled = true; });
     const msg = nodes.get(r.id).querySelector(`[id="${CSS_ID(r.id)}-msg"]`);
     if (msg) msg.textContent = "送っています…";
+    s.canDrop = false; s.imgFail = false;
     try {
+      // 画像を先に保存し、全部成功したら答えのコメントを書く。保存済みの画像は飛ばす
+      for (const im of s.images) {
+        if (im.saved) continue;
+        if (msg) msg.textContent = `画像を保存しています…（${s.images.filter((x) => x.saved).length + 1} / ${s.images.length}）`;
+        try { await putImage(keyStore.get(), im, r.id); im.saved = true; }
+        catch (e) { s.imgFail = true; if (e.status === 403 || e.status === 404) s.canDrop = true; throw Object.assign(e, { phase: "image" }); }
+      }
+      if (msg) msg.textContent = "送っています…";
       const out = await postAnswer(keyStore.get(), r.issue, r.id, text);
-      Object.assign(s, { sent: text, sentUrl: out.url, sentAt: out.at, fromHistory: false, pending: null, note: "" });
+      Object.assign(s, { sent: text, sentUrl: out.url, sentAt: out.at, fromHistory: false, pending: null, note: "", images: [], imgSeq: 0 });
     } catch (e) {
-      s.error = reasonOf(e, "send");
+      s.error = reasonOf(e, e && e.phase === "image" ? "image" : "send");
     }
     s.sending = false;
     paintZone(r); draw();
@@ -313,7 +409,8 @@
   function send(r, mode) {
     if (state[r.id].sending) return;
     const text = buildComment(r, mode);
-    if (!text) { const m = nodes.get(r.id).querySelector(`[id="${CSS_ID(r.id)}-msg"]`); if (m) m.textContent = "答えか一言を入れてください。"; return; }
+    state[r.id].mode = mode;
+    if (!text.trim()) { const m = nodes.get(r.id).querySelector(`[id="${CSS_ID(r.id)}-msg"]`); if (m) m.textContent = "答えか一言を入れてください。"; return; }
     return deliver(r, text);
   }
 
@@ -501,6 +598,9 @@
   function reasonOf(e, phase) {
     const s = e && e.status;
     if (s === 401) return "鍵が使えませんでした。期限が切れたか、貼り間違いの可能性があります";
+    if (phase === "image" && s === 403) return "鍵に書き込みの権限がありません（Contents が「Read-only」のままです）。作り直し方：GitHub で鍵を作り直し、Repository permissions の Contents を「Read and write」にして、新しい鍵を貼り直してください（手順は、鍵を消して出てくる最初の案内と同じです）。言葉だけの答えは、画像を外せば送れます";
+    if (phase === "image" && s === 404) return "画像の保存先が見つかりませんでした。鍵の対象に app-company が入っているか、Contents が「Read and write」か確かめてください";
+    if (phase === "image" && s === 422) return "画像を GitHub が受け付けませんでした";
     if (s === 403) return phase === "send"
       ? "書き込みが断られました。鍵の Issues が「Read and write」になっているか確かめてください（GitHub が混み合っているときも出ます）"
       : "読み込みが断られました。鍵の Contents が「Read-only」以上か確かめてください（GitHub が混み合っているときも出ます）";
@@ -539,8 +639,8 @@
     DATA.requests.forEach((r) => {
       const a = (L.answers[r.issue] || {})[r.id], p = prev[r.id];
       state[r.id] = a
-        ? { choice: null, flags: [], sent: a.text, sentUrl: a.url, sentAt: a.at, fromHistory: true, note: "" }
-        : { choice: p && !p.sent ? p.choice : null, flags: p && !p.sent ? p.flags : [], sent: null, note: p && !p.sent ? p.note : "" };
+        ? { choice: null, flags: [], sent: a.text, sentUrl: a.url, sentAt: a.at, fromHistory: true, note: "", images: [] }
+        : { choice: p && !p.sent ? p.choice : null, flags: p && !p.sent ? p.flags : [], sent: null, note: p && !p.sent ? p.note : "", images: p && !p.sent ? p.images || [] : [], imgSeq: p && !p.sent ? p.imgSeq || 0 : 0 };
       nodes.set(r.id, makeNode(r));
       paintZone(r);
     });
@@ -582,8 +682,22 @@
       const go2 = nodes.get(id).querySelector(`[data-send="${CSS_ID(id)}|choice"]`); if (go2) go2.disabled = false;
     }
     else if (ds.send) { const i = ds.send.lastIndexOf("|"); const r = reqOf(ds.send.slice(0, i)); if (r) return send(r, ds.send.slice(i + 1)); }
+    else if (ds.pick) { const inp = nodes.get(ds.pick).querySelector(`[id="${CSS_ID(ds.pick)}-file"]`); if (inp) inp.click(); }
+    else if (ds.rmimg) {
+      const i = ds.rmimg.lastIndexOf("|"), id = ds.rmimg.slice(0, i), s = state[id];
+      s.images.splice(+ds.rmimg.slice(i + 1), 1); paintImgs(reqOf(id));
+    }
+    else if (ds.dropimg) {
+      const r = reqOf(ds.dropimg), s = r && state[r.id];
+      if (s && !s.sending) {
+        s.images = []; s.imgSeq = 0; s.canDrop = false;
+        const text = String(s.pending || "").replace(/\n*画像 \d+ 枚（app-company リポジトリ内に保存）：[\s\S]*$/, "");   // 送ろうとしていた文から、画像の行だけ除く
+        if (!text.trim()) { s.error = null; s.pending = null; paintZone(r); draw(); return; }   // 言葉が無かったので、入力欄に戻す
+        return deliver(r, text);
+      }
+    }
     else if (ds.retry) { const r = reqOf(ds.retry); if (r && state[r.id].pending && !state[r.id].sending) return deliver(r, state[r.id].pending); }
-    else if (ds.undo) { const r = reqOf(ds.undo); if (r) { state[r.id] = { choice: null, flags: [], sent: null, note: "" }; paintZone(r); draw(); } }
+    else if (ds.undo) { const r = reqOf(ds.undo); if (r) { state[r.id] = { choice: null, flags: [], sent: null, note: "", images: [] }; paintZone(r); draw(); } }
     else if (ds.copy) {
       const out = t.closest(".real").querySelector(".src[role=status]");
       try { await global.navigator.clipboard.writeText(ds.copy); out.textContent = "コピーしました。Safari のアドレス欄に貼ってください。"; }
@@ -593,6 +707,14 @@
 
   function start() {
     doc.addEventListener("click", (e) => { onClick(e).catch(() => { /* 画面は落とさない */ }); });
+    doc.addEventListener("change", (e) => {
+      const inp = e.target && e.target.closest && e.target.closest("input[data-file]");
+      if (!inp || !DATA) return;
+      const r = DATA.requests.find((x) => x.id === inp.dataset.file); if (!r) return;
+      const files = [...(inp.files || [])];
+      try { inp.value = ""; } catch (err) { /* 同じ写真を選び直せなくても進める */ }
+      addImages(r, files).catch(() => { /* 画面は落とさない */ });
+    });
     doc.addEventListener("keydown", (e) => { if (e.key === "Enter" && e.target && e.target.id === "token-in") { const b = doc.querySelector('[data-act="save-token"]'); if (b) b.click(); } });
     return reload();
   }

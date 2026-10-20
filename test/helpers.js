@@ -35,6 +35,7 @@ function standardRoutes(opt) {
         const n = +u.match(/\/issues\/(\d+)\/comments/)[1], page = +(u.match(/[?&]page=(\d+)/) || [0, 1])[1];
         return o.comments ? o.comments(n, page) : json(200, []);
       } },
+    { method: "PUT", match: (u) => u.startsWith(`${API}/contents/`), reply: (u, op) => o.put ? o.put(u, op) : json(201, { content: { path: "x" } }) },
     { method: "POST", match: (u) => /\/issues\/\d+\/comments$/.test(u), reply: (u, op) => o.post ? o.post(u, op) : json(201, { html_url: "https://github.com/example/x/issues/1#issuecomment-99", created_at: "2030-01-02T05:00:00Z" }) }
   ];
 }
@@ -48,6 +49,8 @@ async function boot(opt) {
   const f = makeFetch(o.routes || standardRoutes(o));
   w.fetch = f.fetch;
   w.confirm = () => true;
+  // 画像を縮める処理は jsdom（canvas が無い）では動かないので、偽物に差し替える。中身は本物と同じ形（dataUrl・base64）
+  w.DESK_SHRINK = o.shrink || (async (f) => ({ dataUrl: "data:image/jpeg;base64,QUJD", base64: "QUJD", w: 10, h: 10, name: f.name }));
   w.scrollTo = () => {};
   w.eval(APP);
   await w.Desk.started;

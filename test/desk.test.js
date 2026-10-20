@@ -349,3 +349,135 @@ test("入れ物に会社のデータや鍵を持たない（鍵らしき文字�
     assert.ok(!s.includes("issuecomment-"), f + " に Issue のコメントの URL");
   }
 });
+
+/* ============ 画像を付ける ============ */
+const attach = async (t, id, n) => {
+  const inp = t.$(`[id="${id}-file"]`);
+  const files = Array.from({ length: n }, (_, i) => ({ name: `p${i}.png`, type: "image/png" }));
+  Object.defineProperty(inp, "files", { value: files, configurable: true });
+  inp.dispatchEvent(new t.w.Event("change", { bubbles: true }));
+  await new Promise((r) => t.w.setTimeout(r, 0)); await new Promise((r) => t.w.setTimeout(r, 0));
+  await click(t.w, t.$("body"));
+};
+const puts = (t) => t.calls.filter((c) => c.method === "PUT");
+const posts = (t) => t.calls.filter((c) => c.method === "POST");
+
+test("画像：見本が出て、外せる。置き場所は data/desk-images/<日付>/<依頼id>/ の下", async () => {
+  const t = await boot({ token: T });
+  await openReq(t, "req-11-posts");
+  await attach(t, "req-11-posts", 2);
+  assert.equal(t.$$('[id="req-11-posts-imgs"] img').length, 2);
+  assert.ok(t.$$('[id="req-11-posts-imgs"] img')[0].src.startsWith("data:image/jpeg"), "見本は data: （CSP で許可済み）");
+  await click(t.w, t.$('[data-rmimg="req-11-posts|0"]'));
+  assert.equal(t.$$('[id="req-11-posts-imgs"] img').length, 1);
+});
+
+test("画像：先に保存して、成功したら答えのコメントを書く（パスとリンクを入れる）", async () => {
+  const t = await boot({ token: T });
+  await openReq(t, "req-11-posts");
+  await attach(t, "req-11-posts", 2);
+  t.$('[id="req-11-posts-note"]').value = "スイッチが上寄り";
+  await click(t.w, t.$('[data-send="req-11-posts|note"]'));
+  assert.equal(puts(t).length, 2);
+  const p0 = puts(t)[0];
+  assert.match(p0.url, /^https:\/\/api\.github\.com\/repos\/Yoshiki0423\/app-company\/contents\/data\/desk-images\/\d{4}-\d\d-\d\d\/req-11-posts\/\d{6}-1\.jpg$/);
+  assert.equal(p0.body.content, "QUJD");
+  assert.equal(p0.body.branch, "main");
+  assert.equal(p0.headers.Authorization, "Bearer " + T);
+  const order = t.calls.filter((c) => c.method === "PUT" || c.method === "POST").map((c) => c.method);
+  assert.deepEqual(order, ["PUT", "PUT", "POST"], "画像が先、コメントが最後");
+  const body = posts(t)[0].body.body;
+  assert.ok(body.startsWith("<!-- desk:answer req-11-posts -->\nスイッチが上寄り\n\n画像 2 枚"), body);
+  assert.ok(body.includes("- data/desk-images/") && body.includes("https://github.com/Yoshiki0423/app-company/blob/main/data/desk-images/"));
+  assert.ok(t.$('[id="req-11-posts-zone"]').textContent.includes("送りました"));
+});
+
+test("画像：言葉なしで画像だけでも送れる", async () => {
+  const t = await boot({ token: T });
+  await openReq(t, "req-11-posts");
+  await attach(t, "req-11-posts", 1);
+  await click(t.w, t.$('[data-send="req-11-posts|note"]'));
+  assert.equal(puts(t).length, 1);
+  assert.equal(posts(t).length, 1);
+});
+
+test("画像：途中で失敗したら何が送れたかを出し、もう一度送ると続きから（保存済みは二重に保存しない）", async () => {
+  let n = 0;
+  const put = () => (++n === 2 ? json(500, { message: "boom" }) : json(201, {}));
+  const t = await boot({ token: T, put });
+  await openReq(t, "req-11-posts");
+  await attach(t, "req-11-posts", 3);
+  await click(t.w, t.$('[data-send="req-11-posts|ok"]'));
+  const zone = t.$('[id="req-11-posts-zone"]');
+  assert.ok(zone.textContent.includes("3 枚のうち 1 枚は保存できました、2 枚は送れていません"), zone.textContent);
+  assert.equal(posts(t).length, 0, "画像が揃うまでコメントは書かない");
+  const firstPath = puts(t)[0].url;
+  await click(t.w, t.$('[data-retry="req-11-posts"]'));
+  const urls = puts(t).map((c) => c.url);
+  assert.equal(urls.filter((u) => u === firstPath).length, 1, "保存済みの1枚目は再送しない");
+  assert.equal(new Set(urls).size, 3);
+  assert.equal(posts(t).length, 1);
+  assert.ok(posts(t)[0].body.body.includes("画像 3 枚"));
+});
+
+test("画像：コメントだけ失敗したときも、やり直しで画像は再保存しない", async () => {
+  let n = 0;
+  const post = () => (++n === 1 ? json(500, { message: "boom" }) : json(201, { html_url: "https://github.com/example/x/issues/11#comment-8", created_at: "2030-01-02T06:00:00Z" }));
+  const t = await boot({ token: T, post });
+  await openReq(t, "req-11-posts");
+  await attach(t, "req-11-posts", 1);
+  await click(t.w, t.$('[data-send="req-11-posts|ok"]'));
+  await click(t.w, t.$('[data-retry="req-11-posts"]'));
+  assert.equal(puts(t).length, 1);
+  assert.equal(posts(t).length, 2);
+});
+
+test("画像：鍵に書き込みの権限が無い（403）と分かる言葉で出し、画像を外せば言葉だけ送れる", async () => {
+  const t = await boot({ token: T, put: () => json(403, { message: "Resource not accessible by personal access token" }) });
+  await openReq(t, "req-11-posts");
+  await attach(t, "req-11-posts", 1);
+  t.$('[id="req-11-posts-note"]').value = "ここ直して";
+  await click(t.w, t.$('[data-send="req-11-posts|note"]'));
+  const zone = t.$('[id="req-11-posts-zone"]');
+  assert.ok(zone.textContent.includes("鍵に書き込みの権限がありません"));
+  assert.ok(zone.textContent.includes("作り直し方"));
+  assert.equal(posts(t).length, 0);
+  await click(t.w, t.$('[data-dropimg="req-11-posts"]'));
+  assert.equal(posts(t).length, 1);
+  assert.equal(posts(t)[0].body.body, "<!-- desk:answer req-11-posts -->\nここ直して", "画像の行は入らない");
+});
+
+test("画像：画像なしの答えは今までどおり（PUT しない）", async () => {
+  const t = await boot({ token: T });
+  await openReq(t, "req-11-posts");
+  await click(t.w, t.$('[data-send="req-11-posts|ok"]'));
+  assert.equal(puts(t).length, 0);
+  assert.deepEqual(posts(t)[0].body, { body: "<!-- desk:answer req-11-posts -->\nOK" });
+});
+
+test("画像：7枚目は付けず知らせる／縮められない写真は数えて知らせる", async () => {
+  const t = await boot({ token: T });
+  await openReq(t, "req-11-posts");
+  await attach(t, "req-11-posts", 8);
+  assert.equal(t.$$('[id="req-11-posts-imgs"] img').length, 6);
+  assert.ok(t.$('[id="req-11-posts-msg"]').textContent.includes("6 枚まで"));
+  const t2 = await boot({ token: T, shrink: async () => { throw new Error("x"); } });
+  await openReq(t2, "req-11-posts");
+  await attach(t2, "req-11-posts", 1);
+  assert.equal(t2.$$('[id="req-11-posts-imgs"] img').length, 0);
+  assert.ok(t2.$('[id="req-11-posts-msg"]').textContent.includes("1 枚は読めませんでした"));
+});
+
+test("画像：CSP は GitHub 以外に送らず、画像は data: だけで見せる。読み直しても付けた画像は残る", async () => {
+  const html = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
+  assert.ok(html.includes("connect-src https://api.github.com;"));
+  assert.ok(html.includes("img-src 'self' data:;") && !/blob:/.test(html));
+  assert.ok(html.includes("app.js?v=3"));
+  const t = await boot({ token: T });
+  await openReq(t, "req-11-posts");
+  await attach(t, "req-11-posts", 1);
+  await click(t.w, t.$('#tools [data-act="reload"]'));
+  await openReq(t, "req-11-posts");
+  assert.equal(t.$$('[id="req-11-posts-imgs"] img').length, 1);
+  assert.ok(t.calls.every((c) => c.url.startsWith("https://api.github.com/")));
+});
