@@ -309,20 +309,25 @@
     const urg = r.urgency === "need" ? `<span class="pill warn">答えが要る</span>` : `<span class="pill">お願い・急ぎではない</span>`;
     const unknown = LOAD && LOAD.unknownIssues.includes(r.issue) ? `<span class="pill bad">回答済みか確かめられませんでした</span>` : "";
     const commentLink = safeHref(r.commentUrl) ? `　<a href="${esc(r.commentUrl)}" target="_blank" rel="noopener noreferrer">GitHub の元のコメント</a>` : "";
+    /* 中身が空の見出しは出さない（欠けた欄があっても、見出しだけが残らない） */
+    const has = (v) => typeof v === "string" ? v.trim() !== "" : v != null;
+    const real = realHtml(r);
+    const facts = [["お金", r.money], ["取り消せるか", r.reversible], ["効く範囲", r.scope]].filter((x) => has(x[1]));
+    const main = [
+      has(r.decide) ? `<p class="lead"><b>決めること</b>　${esc(r.decide)}</p>` : "",
+      real ? `<div class="real"><div class="real-label">実物</div>${real}</div>` : "",
+      has(r.effect) ? `<p class="lead">${esc(r.effect)}</p>` : "",
+      has(r.push) ? `<div class="push"><b>推し</b>　${esc(r.push)}</div>` : "",
+      facts.length ? `<dl class="facts">${facts.map((x) => `<dt>${x[0]}</dt><dd>${esc(x[1])}</dd>`).join("")}</dl>` : "",
+      has(r.source) || commentLink ? `<div class="src">詳しくは ${has(r.source) ? esc(r.source) : ""}${commentLink}</div>` : ""
+    ].join("");
     el.innerHTML = `<button type="button" class="req-head" data-toggle="${id}" aria-expanded="false" aria-controls="${id}-body">
-        <span class="tags">${urg}<span class="pill acc">${esc(r.dept)}</span><span class="pill">Issue #${esc(r.issue)}</span><span class="pill good" id="${id}-sentpill" hidden>回答済み</span>${unknown}</span>
-        <span class="rh-title">${esc(r.title)}</span>
+        <span class="tags">${urg}${has(r.dept) ? `<span class="pill acc">${esc(r.dept)}</span>` : ""}<span class="pill">Issue #${esc(r.issue)}</span><span class="pill good" id="${id}-sentpill" hidden>回答済み</span>${unknown}</span>
+        <span class="rh-title">${esc(has(r.title) ? r.title : (r.short || r.id))}</span>
         <span class="rh-more" id="${id}-more">開いて実物を見る・答える</span>
       </button>
       <div id="${id}-body" hidden>
-        <div class="req-main">
-          <p class="lead"><b>決めること</b>　${esc(r.decide)}</p>
-          <div class="real"><div class="real-label">実物</div>${realHtml(r)}</div>
-          <p class="lead">${esc(r.effect)}</p>
-          <div class="push"><b>推し</b>　${esc(r.push)}</div>
-          <dl class="facts"><dt>お金</dt><dd>${esc(r.money)}</dd><dt>取り消せるか</dt><dd>${esc(r.reversible)}</dd><dt>効く範囲</dt><dd>${esc(r.scope)}</dd></dl>
-          <div class="src">詳しくは ${esc(r.source)}${commentLink}</div>
-        </div>
+        ${main ? `<div class="req-main">${main}</div>` : ""}
         <div id="${id}-zone"></div>
       </div>`;
     return el;

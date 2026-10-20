@@ -481,3 +481,26 @@ test("画像：CSP は GitHub 以外に送らず、画像は data: だけで見�
   assert.equal(t.$$('[id="req-11-posts-imgs"] img').length, 1);
   assert.ok(t.calls.every((c) => c.url.startsWith("https://api.github.com/")));
 });
+
+test("欄が欠けた依頼でも黙って消さず出し、中身が空の見出し（推し・お金・実物など）は出さない", async () => {
+  const f = fixture();
+  f.requests = [{ id: "req-bare", issue: 21, urgency: "need", title: "欄の少ない依頼", kind: "text" }];
+  f.timeline = f.timeline.map((g) => ({ ...g, rows: g.rows.map((r) => ({ ...r })) }));
+  const t = await boot({ token: T, desk: () => json(200, JSON.stringify(f)) });
+  await openReq(t, "req-bare");
+  const card = t.$("#req-bare");
+  assert.ok(card, "依頼が出ている");
+  assert.equal(blkN(t), "1件");
+  assert.ok(card.textContent.includes("欄の少ない依頼"));
+  assert.ok(card.querySelector("[data-send]"), "答えのボタンが出る（answer が無くても）");
+  for (const w of ["推し", "お金", "取り消せるか", "効く範囲", "決めること"]) assert.ok(!card.textContent.includes(w), `${w} の見出しは出ない`);
+  assert.ok(!card.querySelector(".real"), "実物の枠は出ない");
+  assert.ok(!card.querySelector(".facts"));
+});
+
+test("欄が揃った依頼では、推し・お金・取り消せるか・効く範囲・実物の見出しが出る", async () => {
+  const t = await boot({ token: T });
+  await openReq(t, "req-11-posts");
+  const card = t.$("#req-11-posts");
+  for (const w of ["推し", "お金", "取り消せるか", "効く範囲", "決めること", "実物"]) assert.ok(card.textContent.includes(w), `${w} が出る`);
+});
