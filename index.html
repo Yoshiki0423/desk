@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; connect-src https://api.github.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; manifest-src 'self'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; connect-src https://api.github.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob:; media-src blob:; manifest-src 'self'; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>社長の机</title>
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -281,6 +281,10 @@ label.opt{display:flex;gap:10px;align-items:center;padding:4px 0}
 .post.flag{border-color:var(--warn)}
 .post-meta{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center;font-size:14px}
 .post p{margin:6px 0 0;white-space:pre-wrap}
+.media{display:flex;flex-direction:column;gap:8px;margin-top:8px}
+.mslot{font-size:14px}
+.mslot img,.mslot video{display:block;max-width:100%;max-height:70vh;border:1px solid var(--line)}
+.mslot.mfail{color:var(--warn)}
 .flagbtn{background:var(--panel2);border:1px solid var(--line);padding:2px 10px;font-size:13px;min-height:32px}
 .flagbtn[aria-pressed="true"]{border-color:var(--warn);color:var(--warn);font-weight:700}
 .answer{margin-top:10px}
@@ -332,6 +336,6 @@ label.opt{display:flex;gap:10px;align-items:center;padding:4px 0}
 </div>
 <nav class="tabbar" id="tabbar" aria-label="タブ"></nav>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
-<script src="app.js?v=11"></script>
+<script src="app.js?v=12"></script>
 </body>
 </html>

@@ -501,10 +501,67 @@
     return out;
   }
 
+  /* ---- 投稿に付く画像・動画（media: [{kind, path}]）。path は他人が書いた文字なので、検査してから使う ---- */
+  const MEDIA_TYPES = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", mp4: "video/mp4", webm: "video/webm", mov: "video/quicktime" };
+  /* 使える path なら整えた path を、だめなら null を返す（先頭の / ・ .. ・ 空の部分 ・ バックスラッシュ ・ 制御文字は弾く） */
+  function mediaPath(p) {
+    if (typeof p !== "string" || !p || p.length > 500 || /[\\\u0000-\u001f]/.test(p) || p.startsWith("/")) return null;
+    const parts = p.split("/");
+    if (parts.some((x) => x === "" || x === "." || x === "..")) return null;
+    return parts.join("/");
+  }
+  const mediaList = (p) => (p && Array.isArray(p.media) ? p.media.filter((m) => m && typeof m === "object") : []);
+  const mediaCache = new Map();   // path -> 取れた blob の URL か、取れなかった理由。一度取ったら開き直しても取り直さない
+  function mediaSlots(r, p, i) {
+    const l = mediaList(p);
+    return l.length ? `<div class="media">${l.map((m, j) => `<div class="mslot" data-mslot="${esc(r.id)}|${i}|${j}">読み込み前（依頼を開くと出ます）</div>`).join("")}</div>` : "";
+  }
+  /* 取り方：Contents API の raw 形式。blob 形式は base64 で 1MB までだが、raw は 100MB まで直接取れる。private リポジトリなので鍵つきで取り、blob の URL にして出す（img/video に鍵は付けられない） */
+  async function fetchMedia(token, path) {
+    const clean = mediaPath(path);
+    if (!clean) throw new Error("場所の書き方が安全でないため読みません");
+    const ext = (clean.split(".").pop() || "").toLowerCase();
+    const type = MEDIA_TYPES[ext];
+    if (!type) throw new Error("対応していない形式です（." + ext + "）");
+    const res = await gh(repoPath("/contents/" + encPath(clean)) + "?ref=" + encodeURIComponent(CONFIG.branch), token, { accept: "application/vnd.github.raw+json" });
+    const buf = await res.arrayBuffer();
+    return global.URL.createObjectURL(new global.Blob([buf], { type }));
+  }
+  function loadMedia(r, el) {
+    if (!el || el.dataset.mediaLoaded === "1") return;
+    el.dataset.mediaLoaded = "1";
+    const token = keyStore.get();
+    (r.posts || []).forEach((p, i) => mediaList(p).forEach((m, j) => {
+      const slot = el.querySelector(`[data-mslot="${CSS_ID(r.id)}|${i}|${j}"]`);
+      if (!slot) return;
+      const show = (url) => {
+        slot.textContent = "";
+        const video = m.kind === "video";
+        const node = doc.createElement(video ? "video" : "img");
+        if (video) { node.controls = true; node.setAttribute("playsinline", ""); node.muted = true; node.setAttribute("muted", ""); node.preload = "metadata"; node.src = url; slot.appendChild(node); return; }
+        node.src = url; node.alt = "投稿に付ける画像 " + (j + 1);
+        const a = doc.createElement("a");
+        a.href = url; a.target = "_blank"; a.rel = "noopener noreferrer"; a.title = "タップで原寸を開く";
+        a.appendChild(node); slot.appendChild(a);
+        const cap = doc.createElement("div"); cap.className = "src"; cap.textContent = "タップで大きく見られます";
+        slot.appendChild(cap);
+      };
+      const fail = (why) => { slot.textContent = "読めませんでした（" + why + "）"; slot.classList.add("mfail"); };
+      const key = typeof m.path === "string" ? m.path : "";
+      let hit = mediaCache.get(key);
+      if (!hit) {
+        hit = fetchMedia(token, m.path).then((url) => ({ url }), (e) => ({ err: (e && e.status === 404) ? "リポジトリに見つかりません" : (e && e.message) || "不明な理由" }));
+        mediaCache.set(key, hit);
+      }
+      slot.textContent = "読み込み中…";
+      Promise.resolve(hit).then((x) => { if (x.url) show(x.url); else fail(x.err); });
+    }));
+  }
+
   function realHtml(r) {
     let h = "";
     if (r.kind === "posts" && Array.isArray(r.posts)) {
-      h += r.posts.map((p, i) => `<div class="post" id="${esc(r.id)}-p${i}"><div class="post-meta"><span><b>${esc(p.day)}</b>　${esc(p.note)}</span><button type="button" class="flagbtn" data-flag="${esc(r.id)}|${i}" aria-pressed="false">ここを直したい</button></div><p>${esc(p.text)}</p></div>`).join("");
+      h += r.posts.map((p, i) => `<div class="post" id="${esc(r.id)}-p${i}"><div class="post-meta"><span><b>${esc(p.day)}</b>　${esc(p.note)}</span><button type="button" class="flagbtn" data-flag="${esc(r.id)}|${i}" aria-pressed="false">ここを直したい</button></div><p>${esc(p.text)}</p>${mediaSlots(r, p, i)}</div>`).join("");
     }
     if (r.kind === "steps" && Array.isArray(r.steps)) h += `<ol class="checks">${r.steps.map((s) => `<li>${esc(s)}</li>`).join("")}</ol>`;
     if (r.kind === "links" && Array.isArray(r.links)) {
@@ -641,6 +698,7 @@
     el.querySelector(".req-head").setAttribute("aria-expanded", String(open));
     el.querySelector(`[id$="-body"]`).hidden = !open;
     el.querySelector(".rh-more").textContent = open ? "閉じる" : "開いて実物を見る・答える";
+    if (open && DATA) { const r = DATA.requests.find((x) => x.id === el.id); if (r && r.kind === "posts") loadMedia(r, el); }
   }
 
   function noteOf(r) {
@@ -1587,7 +1645,7 @@
 
   global.Desk3 = {
     CONFIG, TALK_RE, buildTurns, buildTalkBody, imagePath, findAnswers, buildBody, relayFromRuns, parseRunTitle, activeFromRuns, normalize, safeHref, resolveSegments,
-    runInfo, toRun, parseCommit, toCommit, deptStats, visitBaseline, sinceCounts, deskStale, latestExp, parseApprovals, countByDay, exchanges, groupsOf,
+    mediaPath, fetchMedia, runInfo, toRun, parseCommit, toCommit, deptStats, visitBaseline, sinceCounts, deskStale, latestExp, parseApprovals, countByDay, exchanges, groupsOf,
     started: null,
     start() { this.started = start(); return this.started; }
   };

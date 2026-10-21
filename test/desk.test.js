@@ -258,3 +258,67 @@ test("再依頼：commentUrl が無い、または見つからない依頼は今
   assert.equal(D.findAnswers(cs, [{ id: "req-4", commentUrl: "https://github.com/example/x/issues/4#issuecomment-999" }])["req-4"].at, "2030-01-01T02:00:00Z");
   assert.equal(D.findAnswers(cs)["req-4"].at, "2030-01-01T02:00:00Z");
 });
+
+/* ---- 投稿に付く画像・動画 ---- */
+const withMedia = (media) => () => {
+  const d = require("./fixture")();
+  d.requests.find((r) => r.id === "req-11-posts").posts[0].media = media;
+  return json(200, JSON.stringify(d));
+};
+async function bootMedia(media, mediaReply) {
+  const b = await boot({ hash: "#turn", desk: withMedia(media) });
+  const made = [];
+  b.w.URL.createObjectURL = (blob) => { made.push(blob); return "blob:test/" + made.length; };
+  const orig = b.w.fetch, mcalls = [];
+  b.w.fetch = async (url, o) => {
+    const u = String(url);
+    if (/\/contents\/marketing\//.test(u)) { mcalls.push({ url: u, headers: (o && o.headers) || {} }); return mediaReply(u); }
+    return orig(url, o);
+  };
+  return { b, made, mcalls };
+}
+const bytes = () => new Response(new Uint8Array([1, 2, 3]), { status: 200 });
+
+test("media の path 検査：先頭の / ・ .. ・ 空の部分 ・ 制御文字は弾き、ふつうの path は通す", async () => {
+  const b = await boot({});
+  const M = b.w.Desk3.mediaPath;
+  assert.equal(M("marketing/やめたい人/絵/a.png"), "marketing/やめたい人/絵/a.png");
+  for (const bad of ["/etc/a.png", "../a.png", "a/../b.png", "a//b.png", "./a.png", "a\b.png", "a/b\n.png", "", null, 5]) assert.equal(M(bad), null, String(bad));
+});
+
+test("media：開く前は取らない。開くと鍵つきで raw 形式で取り、日本語の path は部分ごとにエンコードし、画像と動画を出す。開き直しても取り直さない", async () => {
+  const { b, made, mcalls } = await bootMedia(
+    [{ kind: "image", path: "marketing/やめたい人/絵/禁煙 今吸いたい.png" }, { kind: "video", path: "marketing/やめたい人/動画/G1.mp4" }], () => bytes());
+  assert.equal(mcalls.length, 0);
+  await b.click(b.$('[data-toggle="req-11-posts"]'));
+  assert.equal(mcalls.length, 2);
+  assert.ok(mcalls[0].url.includes("/contents/marketing/" + encodeURIComponent("やめたい人") + "/" + encodeURIComponent("絵") + "/" + encodeURIComponent("禁煙 今吸いたい.png")));
+  assert.match(mcalls[0].headers.Accept, /raw/);
+  assert.match(mcalls[0].headers.Authorization, /^Bearer /);
+  const post = b.$("#req-11-posts-p0");
+  const img = post.querySelector("img"), vid = post.querySelector("video");
+  assert.equal(img.getAttribute("src").slice(0, 5), "blob:");
+  assert.equal(img.closest("a").target, "_blank");
+  assert.ok(vid.controls && vid.hasAttribute("playsinline") && vid.muted);
+  assert.equal(made[0].type, "image/png");
+  assert.equal(made[1].type, "video/mp4");
+  await b.click(b.$('[data-toggle="req-11-posts"]'));
+  await b.click(b.$('[data-toggle="req-11-posts"]'));
+  assert.equal(mcalls.length, 2);
+});
+
+test("media：取れなかった物は『読めませんでした（理由）』と出し、ほかの画像と本文は壊さない。危ない path は取りに行かない", async () => {
+  const { b, mcalls } = await bootMedia(
+    [{ kind: "image", path: "marketing/無い.png" }, { kind: "image", path: "../secret.png" }, { kind: "image", path: "marketing/ok.png" }, { kind: "image", path: "marketing/a.exe" }],
+    (u) => (/%E7%84%A1/.test(u) ? json(404, { message: "Not Found" }) : bytes()));
+  await b.click(b.$('[data-toggle="req-11-posts"]'));
+  const slots = b.$$("#req-11-posts-p0 .mslot");
+  assert.equal(slots.length, 4);
+  assert.match(slots[0].textContent, /読めませんでした（.*見つかりません/);
+  assert.match(slots[1].textContent, /読めませんでした（.*安全でない/);
+  assert.ok(slots[2].querySelector("img"));
+  assert.match(slots[3].textContent, /読めませんでした（.*対応していない/);
+  assert.equal(mcalls.length, 2);
+  assert.ok(b.$("#req-11-posts-p0 p").textContent.includes("架空の文1"));
+  assert.ok(b.$("#req-11-posts-p1"));
+});
