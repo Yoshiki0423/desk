@@ -158,13 +158,26 @@
     throw new ApiError(-2, "コメントが多すぎて最後まで読めませんでした");
   }
 
-  /* 社長が書いた、印つきのコメントだけを拾う。同じ依頼に何度も答えていたら、いちばん新しいもの */
-  function findAnswers(comments) {
+  /* 社長が書いた、印つきのコメントだけを拾う。同じ依頼に何度も答えていたら、いちばん新しいもの。
+   * requests（この Issue の依頼）を渡すと、同じ id で出し直された依頼（再依頼）に前回の答えが付かないよう、
+   * 依頼の commentUrl のコメントの作成時刻より後の答えだけを数える。
+   * commentUrl が無い、または Issue のコメントの中に見つからない依頼は、今までどおり（いちばん新しい答え） */
+  function requestTime(comments, url) {
+    if (!url) return "";
+    const m = /issuecomment-(\d+)/.exec(url);
+    const hit = (comments || []).find((c) => c && ((c.html_url && c.html_url === url) || (m && String(c.id) === m[1])));
+    return hit && hit.created_at ? hit.created_at : "";
+  }
+
+  function findAnswers(comments, requests) {
+    const since = {};
+    for (const r of requests || []) if (r && r.id != null) { const t = requestTime(comments, r.commentUrl); if (t) since[r.id] = t; }
     const out = {};
     for (const c of comments || []) {
       if (!c || !c.user || c.user.login !== CONFIG.boss) continue;
       const m = MARK_RE.exec(c.body || "");
       if (!m) continue;
+      if (since[m[1]] && !(c.created_at > since[m[1]])) continue;   // 依頼より前の答え（前回分）は数えない
       const prev = out[m[1]];
       if (!prev || prev.at < c.created_at) out[m[1]] = { text: (c.body || "").slice(m[0].length), at: c.created_at, url: c.html_url || "" };
     }
@@ -444,7 +457,7 @@
       Promise.all(appRows.map((r) => settle(loadAppFiles(token, r.label)).then((x) => ({ id: r.id, ...x }))))
     ]);
     const comments = {}, answers = {}, unknownIssues = [];
-    perIssue.forEach((x) => { if (x.e) { errors.comments[x.n] = x.e; unknownIssues.push(x.n); } else { comments[x.n] = x.v; answers[x.n] = findAnswers(x.v); } });
+    perIssue.forEach((x) => { if (x.e) { errors.comments[x.n] = x.e; unknownIssues.push(x.n); } else { comments[x.n] = x.v; answers[x.n] = findAnswers(x.v, data.requests.filter((r) => Number(r.issue) === x.n)); } });
     const files = {}, fileErr = {};
     perApp.forEach((x) => { if (x.e) fileErr[x.id] = x.e; else files[x.id] = x.v; });
     errors.files = fileErr;

@@ -229,3 +229,32 @@ test("CSP は GitHub の API だけに送り、外部は Google Fonts だけ。�
   assert.ok(html.includes("font-src https://fonts.gstatic.com;"));
   for (const f of ["index.html", "app.js"]) assert.ok(!/github_pat_[A-Za-z0-9]{10,}/.test(fs.readFileSync(path.join(__dirname, "..", f), "utf8")));
 });
+
+/* 同じ id で出し直された依頼（再依頼）：依頼のコメントより前の答えは数えない */
+const mkc = (login, body, at, url, id) => ({ user: { login }, body, created_at: at, html_url: url, id });
+const REQ_URL = "https://github.com/example/x/issues/4#issuecomment-200";
+const ANS = (at) => mkc("Yoshiki0423", "<!-- desk:answer req-4 -->\n直して", at, "https://github.com/example/x/issues/4#issuecomment-" + at.length + at, 1);
+
+test("再依頼：答え→同じ id で出し直しなら未回答（依頼のコメントの時刻より前の答えは数えない）", async () => {
+  const D = (await boot({})).w.Desk3;
+  const cs = [mkc("bot", "依頼", "2030-01-01T01:00:00Z", REQ_URL, 100), ANS("2030-01-01T02:00:00Z"), mkc("bot", "出し直し", "2030-01-01T03:00:00Z", REQ_URL.replace("200", "201"), 201)];
+  const a = D.findAnswers(cs, [{ id: "req-4", commentUrl: REQ_URL.replace("200", "201") }]);
+  assert.equal(a["req-4"], undefined);
+});
+
+test("再依頼：出し直しのあとに答えたら回答済み（いちばん新しい答え）", async () => {
+  const D = (await boot({})).w.Desk3;
+  const url2 = REQ_URL.replace("200", "201");
+  const cs = [ANS("2030-01-01T02:00:00Z"), mkc("bot", "出し直し", "2030-01-01T03:00:00Z", url2, 201), ANS("2030-01-01T04:00:00Z")];
+  const a = D.findAnswers(cs, [{ id: "req-4", commentUrl: url2 }]);
+  assert.equal(a["req-4"].at, "2030-01-01T04:00:00Z");
+  assert.equal(a["req-4"].text, "直して");
+});
+
+test("再依頼：commentUrl が無い、または見つからない依頼は今までどおり（いちばん新しい答え）", async () => {
+  const D = (await boot({})).w.Desk3;
+  const cs = [ANS("2030-01-01T02:00:00Z"), mkc("bot", "依頼", "2030-01-01T03:00:00Z", REQ_URL, 100)];
+  assert.equal(D.findAnswers(cs, [{ id: "req-4" }])["req-4"].at, "2030-01-01T02:00:00Z");
+  assert.equal(D.findAnswers(cs, [{ id: "req-4", commentUrl: "https://github.com/example/x/issues/4#issuecomment-999" }])["req-4"].at, "2030-01-01T02:00:00Z");
+  assert.equal(D.findAnswers(cs)["req-4"].at, "2030-01-01T02:00:00Z");
+});
