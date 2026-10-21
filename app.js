@@ -2,6 +2,7 @@
  * この入れ物には会社のデータを一切置かない。開いたときに、社長の鍵で GitHub の API から読む。
  *   画面のデータ … app-company の data/desk.json（Contents API）
  *   リレーの成否 … Actions API（読めなければ desk.json の値）
+ *   いま動いている部署 … 同じ Actions API の、実行中と順番待ちの実行（実行ごとの名前「工程｜Issue番号｜申し送り」から）
  *   答え済みの判定 … 各 Issue のコメントに、社長が書いた「<!-- desk:answer 依頼のid -->」があるか
  *   答える … Issue のコメントとして書き込む（社長の鍵なので、書いた人は社長になる）
  * 画面は「公開までの線表」（2026-10-20 に社長が方向を確定）。上に結論2つ（公開まで何日・止めているもの何件）、真ん中に線表、下に予定と返事待ち。
@@ -34,6 +35,10 @@
   const MARK_RE = /^\s*<!--\s*desk:answer\s+(\S+)\s*-->[ \t]*\r?\n?/;
   const TALK_RE = /^\s*<!--\s*desk:talk\s*-->[ \t]*\r?\n?/;     // 話しかけ（答えではない相談・調べ物の頼み）の印
   const ANY_MARK_RE = /^\s*<!--\s*desk:(?:answer\s+\S+|talk)\s*-->[ \t]*\r?\n?/;
+  const STAGE_JA = {   // 実行の名前の「工程」→ 部署名。知らない工程はそのまま出す
+    manager: "事業部長", planning: "企画部", screening: "審査部", design: "デザイン部", trial: "試用部", development: "開発部",
+    store: "ストア担当", x: "X部", video: "縦動画部", threads: "Threads部", knowledge: "ナレッジ部", image: "絵の工程", patrol: "見回り"
+  };
   const RUN_FAIL = new Set(["failure", "timed_out", "startup_failure"]);
   const SAFE_HREF = /^(https?:|exp:)/i;
 
@@ -120,6 +125,41 @@
     const res = await gh(repoPath(`/actions/workflows/${CONFIG.workflow}/runs?per_page=${CONFIG.runsPerPage}`), token);
     const j = await res.json();
     return relayFromRuns(j.workflow_runs);
+  }
+
+  /* 実行ごとの名前「工程｜Issue番号｜申し送り」を分ける。この形でなければ null（古い実行の「リレー」だけの名前など）。
+   * 申し送りは長く、改行や「｜」を含むことがあるので、2つ目の「｜」から後ろは全部申し送りとして残す */
+  function parseRunTitle(title) {
+    const parts = String(title == null ? "" : title).split("｜");
+    if (parts.length < 2) return null;
+    const stage = parts[0].trim();
+    if (!/^[A-Za-z][\w-]*$/.test(stage)) return null;
+    const m = parts[1].trim().match(/^#?(\d+)$/);
+    return { stage, issue: m ? Number(m[1]) : null, note: parts.slice(2).join("｜").trim() };
+  }
+
+  /* 実行の一覧から、いま動いているもの・順番待ちのものを拾う。人が起こした実行（workflow_dispatch）だけ。
+   * コメントや push で起きる数秒の振り分けの実行は出さない。「工程｜」の形でない名前も出さない */
+  function activeFromRuns(runs) {
+    const seen = new Set(), running = [], waiting = [];
+    (runs || []).forEach((r) => {
+      if (!r || r.status === "completed" || r.event !== "workflow_dispatch" || seen.has(r.id)) return;
+      const t = parseRunTitle(r.display_title);
+      if (!t) return;
+      seen.add(r.id);
+      const item = { ...t, url: r.html_url || "", since: r.status === "in_progress" ? (r.run_started_at || r.created_at) : r.created_at };
+      (r.status === "in_progress" ? running : waiting).push(item);
+    });
+    const byOld = (a, b) => String(a.since).localeCompare(String(b.since));
+    return { running: running.sort(byOld), waiting: waiting.sort(byOld) };
+  }
+
+  /* 20件の一覧だと、短い実行が続いたときに動いているものを取りこぼす。確実なよう、状態で絞って別々に読む
+   * （実行中と順番待ち。event で振り分けの実行も先に除く。waiting などの珍しい状態は、このリレーでは使っていない） */
+  async function loadActive(token) {
+    const q = (st) => gh(repoPath(`/actions/workflows/${CONFIG.workflow}/runs?status=${st}&event=workflow_dispatch&per_page=${CONFIG.runsPerPage}`), token).then((res) => res.json());
+    const [a, b] = await Promise.all([q("in_progress"), q("queued")]);
+    return activeFromRuns([...(a.workflow_runs || []), ...(b.workflow_runs || [])]);
   }
 
   async function loadComments(token, n) {
@@ -212,8 +252,9 @@
   async function loadAll(token) {
     const data = await loadDesk(token);
     const nums = [...new Set(data.requests.map((r) => r.issue))];
-    const [relay, likes, ...perIssue] = await Promise.all([
+    const [relay, active, likes, ...perIssue] = await Promise.all([
       loadRelay(token).then((v) => ({ v }), (e) => ({ e })),
+      loadActive(token).then((v) => ({ v }), (e) => ({ e })),
       loadLikes(token),
       ...nums.map((n) => loadComments(token, n).then((c) => ({ n, a: findAnswers(c) }), (e) => ({ n, e })))
     ]);
@@ -221,7 +262,7 @@
     perIssue.forEach((x) => { if (x.e) unknownIssues.push(x.n); else answers[x.n] = x.a; });
     let relaySource = "desk";
     if (relay.v) { data.relay = { ...data.relay, ...relay.v }; relaySource = "actions"; }
-    return { data, likes, answers, unknownIssues, relaySource, loadedAt: new Date().toISOString() };
+    return { data, likes, answers, unknownIssues, relaySource, active: active.v || null, loadedAt: new Date().toISOString() };
   }
 
   /* ============ 表示の道具（試作と同じ） ============ */
@@ -709,6 +750,38 @@
       <div class="wait">${wt || "いまはなし"}</div></section>`;
   }
 
+  /* いま動いている部署。Issue 番号は、線表の行（label と issue）で名前が1つに決まるときだけアプリ名にする */
+  function issueName(n) {
+    if (n == null) return "";
+    const names = new Set();
+    DATA.timeline.forEach((g) => g.rows.forEach((r) => { if (r.issue === n && r.label) names.add(r.label); }));
+    return names.size === 1 ? [...names][0] : `#${n}`;
+  }
+  function sinceText(iso, nowIso) {
+    const t = Date.parse(iso), n = Date.parse(nowIso);
+    if (!isFinite(t) || !isFinite(n)) return "";
+    const m = Math.max(0, Math.floor((n - t) / 60000));
+    if (m < 1) return "1分未満";
+    return (m >= 60 ? `${Math.floor(m / 60)}時間${m % 60 ? (m % 60) + "分" : ""}` : `${m}分`) + "前から";
+  }
+  function activeRowHtml(x) {
+    const dept = STAGE_JA[x.stage] || x.stage;
+    const first = x.note.split(/\r?\n/)[0].trim();
+    const note = first ? (first.length > 40 ? first.slice(0, 40) + "…" : first) : "";
+    const href = safeHref(x.url);
+    const body = `<b>${esc(dept)}</b>　${esc(issueName(x.issue))}${note ? `　<span class="src">${esc(note)}</span>` : ""}　<span class="src">${esc(sinceText(x.since, LOAD.loadedAt))}</span>`;
+    return `<div class="act-row">${href ? `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${body}</a>` : body}</div>`;
+  }
+  function activeHtml() {
+    const A = LOAD && LOAD.active;
+    if (!A) return `<section class="panel" id="active"><div class="lbl">いま動いている</div><p class="src"><span class="unk">読めませんでした</span>（鍵の Actions が「Read-only」か確かめてください）。ほかの欄は読めています。</p></section>`;
+    if (!A.running.length && !A.waiting.length) return `<section class="panel" id="active"><div class="lbl">いま動いている</div><p class="src">いま動いている部署はありません</p></section>`;
+    return `<section class="panel" id="active">`
+      + (A.running.length ? `<div class="lbl">いま動いている</div>${A.running.map(activeRowHtml).join("")}` : "")
+      + (A.waiting.length ? `<div class="lbl"${A.running.length ? ` style="margin-top:8px"` : ""}>順番待ち</div>${A.waiting.map(activeRowHtml).join("")}` : "")
+      + `</section>`;
+  }
+
   function relayHtml() {
     const rel = DATA.relay.recent, ng = rel.filter((x) => x[0] === "!").length;
     if (!rel.length) return "";
@@ -788,7 +861,7 @@
   function viewHtml() {
     const todo = DATA.requests.length
       ? `<section class="panel" id="todo"><div class="lbl">社長がやること</div><div id="req-slot"></div></section>` : "";
-    return verdictHtml() + `<div id="talk-slot"></div>` + likesHtml() + todo + chartHtml() + aheadHtml() + relayHtml();
+    return verdictHtml() + `<div id="talk-slot"></div>` + activeHtml() + likesHtml() + todo + chartHtml() + aheadHtml() + relayHtml();
   }
 
   function stampText() {
@@ -1007,7 +1080,7 @@
   }
 
   global.Desk = {
-    CONFIG, TALK_RE, buildTurns, buildTalkBody, shrinkImage, imagePath, findAnswers, buildBody, relayFromRuns, normalize, safeHref, resolveSegments,
+    CONFIG, TALK_RE, buildTurns, buildTalkBody, shrinkImage, imagePath, findAnswers, buildBody, relayFromRuns, parseRunTitle, activeFromRuns, normalize, safeHref, resolveSegments,
     started: null,
     start() { this.started = start(); return this.started; }
   };

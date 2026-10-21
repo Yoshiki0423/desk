@@ -30,7 +30,7 @@ function standardRoutes(opt) {
   const o = opt || {};
   return [
     { match: (u) => u === `${API}/contents/data/desk.json`, reply: () => o.desk ? o.desk() : json(200, JSON.stringify(require("./fixture")())) },
-    { match: (u) => u.startsWith(`${API}/actions/workflows/relay.yml/runs`), reply: () => o.runs ? o.runs() : json(200, { workflow_runs: [] }) },
+    { match: (u) => u.startsWith(`${API}/actions/workflows/relay.yml/runs`), reply: (u) => o.runs ? o.runs(u) : json(200, { workflow_runs: [] }) },
     { match: (u) => /\/issues\/\d+$/.test(u), reply: (u) => { const n = +u.match(/\/issues\/(\d+)$/)[1]; return o.issue ? o.issue(n) : json(200, { number: n, comments: 0 }); } },
     { match: (u) => /\/issues\/\d+\/comments\?/.test(u), reply: (u) => {
         const n = +u.match(/\/issues\/(\d+)\/comments/)[1], page = +(u.match(/[?&]page=(\d+)/) || [0, 1])[1];

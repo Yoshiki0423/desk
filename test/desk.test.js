@@ -472,7 +472,7 @@ test("画像：CSP は GitHub 以外に送らず、画像は data: だけで見�
   const html = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
   assert.ok(html.includes("connect-src https://api.github.com;"));
   assert.ok(html.includes("img-src 'self' data:;") && !/blob:/.test(html));
-  assert.ok(html.includes("app.js?v=7"));
+  assert.ok(html.includes("app.js?v=8"));
   const t = await boot({ token: T });
   await openReq(t, "req-11-posts");
   await attach(t, "req-11-posts", 1);
