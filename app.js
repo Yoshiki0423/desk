@@ -29,7 +29,8 @@
     maxSide: 1600,                // 送る前に縮める長い辺（px）
     jpegQuality: 0.82,
     talkIssue: 5,                 // 事業部長に話しかける先（社長の机）。リレーはここへの社長のコメントで事業部長を起こす
-    talkTurns: 5,                 // 「最近のやり取り」に出す往復の数
+    talkItems: 10,                // 「最近のやり取り」に出す件数（社長の言葉・返事・報告を1件ずつ数える）
+    talkOpen: 5,                  // そのうち、畳まずに見せる新しい方の件数（残りは「それより前」に畳む）
     talkFetch: 40                 // やり取りを作るために、#5 の新しい方から読むコメントの数
   };
   const MARK_RE = /^\s*<!--\s*desk:answer\s+(\S+)\s*-->[ \t]*\r?\n?/;
@@ -500,27 +501,27 @@
 
   const isReport = (c) => /^\s*【事業部長】毎日の報告/.test((c && c.body) || "");
 
-  /* コメントを「往復」にまとめる。社長のコメント1つ＋その後の返事（毎日の報告は返事に混ぜず、単独の1件）。新しい順に n 件 */
+  /* コメントを1件ずつ、新しい順に n 件並べる（社長の言葉・返事・毎日の報告を区別せず、created_at の降順）。
+     社長の相談で、次の社長の言葉や報告の前に返事が無いものには pending を付ける（「まだ返事はありません」用） */
   function buildTurns(comments, n) {
-    const turns = [];
-    let cur = null;
-    for (const c of comments || []) {
-      if (!c) continue;
-      const mine = !!(c.user && c.user.login === CONFIG.boss);
-      if (mine) {
-        const body = c.body || "";
-        const kind = TALK_RE.test(body) ? "talk" : /^\s*<!--\s*desk:answer/.test(body) ? "answer" : "plain";
-        cur = { boss: { text: body.replace(ANY_MARK_RE, ""), at: c.created_at, url: c.html_url || "", kind }, replies: [], report: null };
-        turns.push(cur);
-      } else if (isReport(c)) {
-        turns.push({ boss: null, replies: [], report: { text: c.body || "", at: c.created_at, url: c.html_url || "" } });
-        cur = null;
-      } else {
-        const r = { text: c.body || "", at: c.created_at, url: c.html_url || "" };
-        if (cur) cur.replies.push(r); else turns.push({ boss: null, replies: [r], report: null });
-      }
-    }
-    return turns.slice(-n).reverse();
+    const list = (comments || []).filter(Boolean);
+    const items = [];
+    list.forEach((c, i) => {
+      const base = { text: c.body || "", at: c.created_at, url: c.html_url || "" };
+      if (c.user && c.user.login === CONFIG.boss) {
+        const kind = TALK_RE.test(base.text) ? "talk" : /^\s*<!--\s*desk:answer/.test(base.text) ? "answer" : "plain";
+        let replied = false;
+        for (let j = i + 1; j < list.length; j++) {
+          const d = list[j];
+          if ((d.user && d.user.login === CONFIG.boss) || isReport(d)) break;
+          replied = true; break;
+        }
+        items.push({ who: "boss", ...base, text: base.text.replace(ANY_MARK_RE, ""), kind, pending: kind !== "answer" && !replied, i });
+      } else items.push({ who: isReport(c) ? "report" : "mgr", ...base, i });
+    });
+    const t = (x) => Date.parse(x.at) || 0;
+    items.sort((x, y) => t(y) - t(x) || y.i - x.i);
+    return items.slice(0, n);
   }
 
   const speaker = (text) => { const m = /^\s*【([^】]{1,20})】/.exec(text); return m ? m[1] : "返事"; };
@@ -535,11 +536,10 @@
     return `<div class="bub ${cls}">${head}<p class="bub-t">${esc(t)}</p></div>`;
   }
   function turnHtml(t) {
-    if (t.report) return `<div class="turn">${bubbleHtml("事業部長の毎日の報告", "rep", t.report.text, t.report.at, t.report.url)}</div>`;
-    let h = "";
-    if (t.boss) h += bubbleHtml(t.boss.kind === "answer" ? "社長（依頼への答え）" : "社長", "me", t.boss.text, t.boss.at, t.boss.url);
-    h += t.replies.map((r) => bubbleHtml(speaker(r.text), "mgr", r.text, r.at, r.url)).join("");
-    if (t.boss && t.boss.kind !== "answer" && !t.replies.length) h += `<p class="hint">まだ返事はありません。事業部長が読むと、ここに出ます（「読み直す」で更新）。</p>`;
+    let h;
+    if (t.who === "report") h = bubbleHtml("事業部長の毎日の報告", "rep", t.text, t.at, t.url);
+    else if (t.who === "boss") h = bubbleHtml(t.kind === "answer" ? "社長（依頼への答え）" : "社長", "me", t.text, t.at, t.url) + (t.pending ? `<p class="hint">まだ返事はありません。事業部長が読むと、ここに出ます（「読み直す」で更新）。</p>` : "");
+    else h = bubbleHtml(speaker(t.text), "mgr", t.text, t.at, t.url);
     return `<div class="turn">${h}</div>`;
   }
 
@@ -576,7 +576,7 @@
     else if (!talk.turns) list.innerHTML = `<p class="hint">読み込み中…</p>`;
     else if (!talk.turns.length) list.innerHTML = `<p class="hint">まだやり取りはありません。</p>`;
     else {
-      const head = talk.turns.slice(0, 2), rest = talk.turns.slice(2);
+      const head = talk.turns.slice(0, CONFIG.talkOpen), rest = talk.turns.slice(CONFIG.talkOpen);
       list.innerHTML = head.map(turnHtml).join("") + (rest.length ? `<details><summary>それより前のやり取り（${rest.length}件）</summary>${rest.map(turnHtml).join("")}</details>` : "");
     }
     el.querySelector("#talk-go").disabled = talk.sending;
@@ -584,7 +584,7 @@
 
   async function loadTalk() {
     try {
-      talk.turns = buildTurns(await loadTalkComments(keyStore.get()), CONFIG.talkTurns);
+      talk.turns = buildTurns(await loadTalkComments(keyStore.get()), CONFIG.talkItems);
       talk.loadErr = "";
     } catch (e) {
       talk.loadErr = "やり取りを読めませんでした（" + reasonOf(e, "load") + "）。送ることはできます";
@@ -861,7 +861,7 @@
   function viewHtml() {
     const todo = DATA.requests.length
       ? `<section class="panel" id="todo"><div class="lbl">社長がやること</div><div id="req-slot"></div></section>` : "";
-    return verdictHtml() + `<div id="talk-slot"></div>` + activeHtml() + likesHtml() + todo + chartHtml() + aheadHtml() + relayHtml();
+    return verdictHtml() + activeHtml() + `<div id="talk-slot"></div>` + likesHtml() + todo + chartHtml() + aheadHtml() + relayHtml();
   }
 
   function stampText() {

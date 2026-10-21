@@ -472,7 +472,7 @@ test("画像：CSP は GitHub 以外に送らず、画像は data: だけで見�
   const html = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
   assert.ok(html.includes("connect-src https://api.github.com;"));
   assert.ok(html.includes("img-src 'self' data:;") && !/blob:/.test(html));
-  assert.ok(html.includes("app.js?v=8"));
+  assert.ok(html.includes("app.js?v=9"));
   const t = await boot({ token: T });
   await openReq(t, "req-11-posts");
   await attach(t, "req-11-posts", 1);
@@ -518,7 +518,9 @@ test("話しかけ：止めているものが0件でも、結論のすぐ下に�
   assert.ok(talk, "話しかける欄がある");
   assert.ok(talk.textContent.includes("事業部長に話しかける"));
   assert.equal(talk.parentElement.id, "talk-slot");
-  assert.ok(talk.parentElement.previousElementSibling.querySelector(".verdict") || talk.parentElement.previousElementSibling.className.includes("verdict"), "結論の直後");
+  const act = talk.parentElement.previousElementSibling, vd = act.previousElementSibling;
+  assert.equal(act.id, "active", "話しかける欄の上は、いま動いている欄");
+  assert.ok(vd.querySelector(".verdict") || vd.className.includes("verdict"), "その上が結論");
   assert.equal(t.$("#todo"), null, "依頼の欄は出ない");
 });
 
@@ -594,14 +596,53 @@ test("話しかけ：最近のやり取りを新しい順に並べる。毎日�
   assert.ok(t.$$("#talk-list .turn")[0].textContent.includes("毎日の報告"), "いちばん新しい報告が先頭");
 });
 
-test("話しかけ：返事が無い最新の相談には返事待ちと出す。往復は5件まで、古い方は畳む", async () => {
+test("話しかけ：1件ずつ created_at の新しい順に並ぶ（社長の言葉も返事も報告も同じ1列）", async () => {
+  const rep = "【事業部長】毎日の報告\nきょう";
+  const list = [
+    { user: { login: "Yoshiki0423" }, body: "<!-- desk:talk -->\nA相談", created_at: "2030-01-01T10:00:00Z", html_url: "" },
+    mgr("【事業部長】A返事", "2030-01-01T11:00:00Z"),
+    mgr(rep, "2030-01-01T12:00:00Z"),
+    { user: { login: "Yoshiki0423" }, body: "<!-- desk:talk -->\nB相談", created_at: "2030-01-01T13:00:00Z", html_url: "" },
+    mgr("【企画部】B返事", "2030-01-01T14:00:00Z")
+  ];
+  const t = await boot({ token: T, ...talkRoutes(list) });
+  const turns = [...t.$$("#talk-list .turn")].map((x) => x.textContent);
+  const key = ["B返事", "B相談", "毎日の報告", "A返事", "A相談"];
+  assert.deepEqual(key.map((k) => turns.findIndex((x) => x.includes(k))), [0, 1, 2, 3, 4]);
+  assert.ok(turns[0].includes("企画部"), "返事の名前は残る");
+  assert.ok(!turns[3].includes("まだ返事"), "返事のある相談に返事待ちは出ない");
+});
+
+test("話しかけ：buildTurns は1件ずつ新しい順に n 件。返事待ちは次の社長の言葉・報告までに返事が無い相談だけ", async () => {
+  const t = await boot({ token: T, ...talkRoutes([]) });
+  const boss = (b, at) => ({ user: { login: "Yoshiki0423" }, body: b, created_at: at, html_url: "" });
+  const out = t.w.Desk.buildTurns([
+    boss("<!-- desk:talk -->\n一", "2030-01-01T01:00:00Z"),
+    boss("<!-- desk:talk -->\n二", "2030-01-01T02:00:00Z"),
+    mgr("【事業部長】二への返事", "2030-01-01T03:00:00Z"),
+    boss("<!-- desk:answer x -->\n答え", "2030-01-01T04:00:00Z")
+  ], 4);
+  assert.deepEqual([...out.map((x) => x.who + ":" + x.text.trim())], ["boss:答え", "mgr:【事業部長】二への返事", "boss:二", "boss:一"]);
+  assert.deepEqual([...out.map((x) => !!x.pending)], [false, false, false, true], "一だけ、次の社長の言葉までに返事が無い");
+});
+
+test("話しかけ：返事が無い最新の相談には返事待ちと出す。10件まで、5件目より前は畳む", async () => {
   const list = [];
-  for (let i = 1; i <= 7; i++) list.push({ user: { login: "Yoshiki0423" }, body: "<!-- desk:talk -->\n相談" + i, created_at: "2030-01-0" + i + "T01:00:00Z", html_url: "" });
+  for (let i = 1; i <= 12; i++) list.push({ user: { login: "Yoshiki0423" }, body: "<!-- desk:talk -->\n相談" + String(i).padStart(2, "0"), created_at: "2030-01-" + String(i).padStart(2, "0") + "T01:00:00Z", html_url: "" });
   const t = await boot({ token: T, ...talkRoutes(list) });
   const all = t.$("#talk-list").textContent;
-  assert.ok(all.includes("相談7") && all.includes("相談3") && !all.includes("相談2"), "5往復まで");
+  assert.ok(all.includes("相談12") && all.includes("相談03") && !all.includes("相談02"), "10件まで");
   assert.ok(t.$("#talk-list .turn").textContent.includes("まだ返事はありません"));
   assert.ok(t.$("#talk-list > details"), "古い方は畳む");
+  assert.equal(t.$$("#talk-list > .turn").length, 5, "畳まずに見せるのは5件");
+  assert.ok(t.$("#talk-list > details summary").textContent.includes("5件"));
+});
+
+test("画面の並び：いま動いている欄は結論の下・話しかける欄の上", async () => {
+  const t = await boot({ token: T, ...talkRoutes([]) });
+  const act = t.$("#active"), slot = t.$("#talk-slot");
+  assert.ok(act && slot);
+  assert.ok(act.compareDocumentPosition(slot) & 4, "いま動いている欄が話しかける欄より先");
 });
 
 test("話しかけ：コメントが多い #5 は最後のページから読む。読めなくても送る欄は使える", async () => {
