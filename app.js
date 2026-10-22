@@ -42,6 +42,13 @@
     talkOpen: 5,                  // そのうち、畳まずに見せる新しい方の件数
     talkFetch: 40,                // やり取りを作るために、#5 の新しい方から読むコメントの数
     staleDays: 2,                 // desk.json が何日前から「止まっている」か。事業部長は夜に書き直すので、1日前のままは普通に起きる。2日以上前なら書き直しが1回以上抜けたと見なす
+    /* 自動で読み直す間隔。1回の読み直しは GitHub の呼び出し約25〜40回。鍵の上限は1時間5000回なので、
+     * ふだん90秒ごと（最大 約1600回/時）、答えを送った直後の2分だけ20秒ごと（1回の答えにつき最大6回＝約240回）なら、
+     * 1時間に5回答えても約2800回で足りる（見積もりはテストで確かめる）。画面が見えている間だけ動く。上限に当たったら5分あける */
+    autoSlowMs: 90e3,
+    autoFastMs: 20e3,
+    autoFastWindowMs: 120e3,
+    autoBackoffMs: 300e3,
     sameVisitMin: 30              // これより短い間隔の開き直しは「同じ訪問」とみなし、数え始めの時刻を動かさない（更新で数が0に戻らないように）
   };
   const STAGE_JA = {   // 実行の名前の「工程」→ 部署名。知らない工程はそのまま出す
@@ -803,6 +810,7 @@
       if (msg) msg.textContent = "送っています…";
       const out = await postAnswer(keyStore.get(), r.issue, r.id, text);
       Object.assign(s, { sent: text, sentUrl: out.url, sentAt: out.at, fromHistory: false, pending: null, note: "", images: [], imgSeq: 0 });
+      boost();
     } catch (e) {
       s.error = reasonOf(e, e && e.phase === "image" ? "image" : "send");
     }
@@ -909,12 +917,14 @@
     } else if (talk.status) msg.innerHTML = `<div class="sent" role="status">${esc(talk.status)}</div>`;
     else msg.textContent = "";
     const list = el.querySelector("#talk-list");
+    const olderOpen = !!(list.querySelector("details") && list.querySelector("details").open);
     if (talk.loadErr) list.innerHTML = `<p class="notice">${esc(talk.loadErr)}</p>`;
     else if (!talk.turns) list.innerHTML = `<p class="hint">読み込み中…</p>`;
     else if (!talk.turns.length) list.innerHTML = `<p class="hint">まだやり取りはありません。</p>`;
     else {
       const head = talk.turns.slice(0, CONFIG.talkOpen), rest = talk.turns.slice(CONFIG.talkOpen);
       list.innerHTML = head.map(turnHtml).join("") + (rest.length ? `<details><summary>それより前のやり取り（${rest.length}件）</summary>${rest.map(turnHtml).join("")}</details>` : "");
+      const dt = list.querySelector("details"); if (dt && olderOpen) dt.open = true;
     }
     el.querySelector("#talk-go").disabled = talk.sending;
   }
@@ -969,6 +979,7 @@
       await res.json().catch(() => ({}));
       talk.note = ""; ta.value = ""; talk.images = []; talk.imgSeq = 0;
       talk.status = "送りました。事業部長が読みます（返事は下に出ます）。";
+      boost();
     } catch (e) {
       talk.error = reasonOf(e, e && e.phase === "image" ? "image" : "send");
     }
@@ -1622,15 +1633,62 @@
   }
 
   /* ============ 読み込み ============ */
-  async function reload() {
+  let loading = false;
+  let autoTimer = null, fastUntil = 0, autoFailAt = 0, autoBackoff = false, lastSig = "";
+  const sigOf = (L) => { try { return JSON.stringify({ ...L, loadedAt: 0 }); } catch (e) { return String(Math.random()); } };
+
+  /* 描き直しで消えるもの（開いている畳み・スクロール位置）を覚えて、描き直したあとに戻す */
+  function captureUi() {
+    const open = [], full = [];
+    nodes.forEach((el, id) => {
+      const h = el.querySelector(".req-head");
+      if (h && h.getAttribute("aria-expanded") === "true") open.push([id, el.dataset.touched === "1"]);
+      const d = el.querySelector("details.fulltext"); if (d && d.open) full.push(id);
+    });
+    const m = $("#main");
+    return { open, full, my: m ? m.scrollTop : 0, wy: global.pageYOffset || 0 };
+  }
+  function restoreUi(u) {
+    u.open.forEach(([id, touched]) => { const el = nodes.get(id); if (el) { if (touched) el.dataset.touched = "1"; setOpen(el, true); } });
+    u.full.forEach((id) => { const el = nodes.get(id); const d = el && el.querySelector("details.fulltext"); if (d) d.open = true; });
+    const m = $("#main"); if (m) m.scrollTop = u.my;
+    try { global.scrollTo(0, u.wy); } catch (e) { /* 動かなくてよい */ }
+  }
+  function paintStamp() {
+    const el = $("#stamp"); if (!el) return;
+    el.textContent = !DATA ? "" : autoFailAt ? `最後に読んだ時刻 ${jst(lastOk)}（自動で読み直せませんでした）` : `最後に読んだ時刻 ${jst(lastOk)}`;
+  }
+
+  async function reload(opt) {
+    const auto = !!(opt && opt.auto);
     const token = keyStore.get();
     if (!token) { showSetup(); return; }
+    if (loading) return;
+    loading = true;
+    try { await reloadInner(token, auto); } finally { loading = false; }
+  }
+  async function reloadInner(token, auto) {
     $("#tools").hidden = false;
-    const sp = $("#sidestamp"); if (sp) sp.textContent = "読み込み中…" + (lastOk ? `（前回 ${jst(lastOk)}）` : "");
-    if (!DATA) $("#view").innerHTML = G(P("読み込み中", "s12", `<div class="empty">GitHub から読んでいます…</div>`));
+    if (!auto) {
+      const sp = $("#sidestamp"); if (sp) sp.textContent = "読み込み中…" + (lastOk ? `（前回 ${jst(lastOk)}）` : "");
+      if (!DATA) $("#view").innerHTML = G(P("読み込み中", "s12", `<div class="empty">GitHub から読んでいます…</div>`));
+    }
     let L;
-    try { L = await loadAll(token); } catch (e) { draw(); showLoadError(e); badges(); return; }
+    try { L = await loadAll(token); } catch (e) {
+      if (auto) { autoFailAt = Date.now(); autoBackoff = !!(e && (e.status === 403 || e.status === 429)); paintStamp(); return; }   // 自動のときは、いま見ている画面を壊さず静かに待つ
+      draw(); showLoadError(e); badges(); return;
+    }
+    if (auto) {   // 自動のときは、一部でも読めなかったら今の画面を残す（読めなかった所が空で上書きされないように）
+      const e = L.errors || {};
+      const bad = [e.desk, e.runs, e.active, e.commits, e.approvals, e.cases, e.results, ...Object.values(e.comments || {}), ...Object.values(e.files || {})].filter(Boolean);
+      if (bad.length) { autoFailAt = Date.now(); autoBackoff = bad.some((x) => x.status === 403 || x.status === 429); paintStamp(); return; }
+    }
+    autoFailAt = 0; autoBackoff = false;
+    const sig = sigOf(L);
+    if (auto && DATA && sig === lastSig) { lastOk = L.loadedAt; badges(); paintStamp(); return; }   // 何も変わっていなければ描き直さない
     $("#notice").innerHTML = "";
+    const ui = auto && DATA ? captureUi() : null;
+    lastSig = sig;
     // 送っていない入力は、読み直しても残す
     const prev = state;
     nodes.forEach((el, id) => { const t = el.querySelector("textarea"); if (t && prev[id]) prev[id].note = t.value; });
@@ -1646,7 +1704,43 @@
     });
     talkNode().hidden = false;
     route();
+    if (ui) restoreUi(ui);
+    paintStamp();
     await loadTalk();
+  }
+
+  /* ============ 開いている間の自動読み直し ============ */
+  const visible = () => { try { return doc.visibilityState !== "hidden"; } catch (e) { return true; } };
+  /* 社長が入力中か（欄に文字カーソルがある）。入力中は描き直さない */
+  function typing() {
+    const a = doc.activeElement;
+    return !!(a && /^(TEXTAREA|INPUT)$/.test(a.tagName) && a.id !== "token-in");
+  }
+  function busy() {
+    if (loading || talk.sending) return true;
+    return Object.keys(state).some((k) => state[k].sending || state[k].pending);   // 送信中・送れなかった文がある間は触らない
+  }
+  function nextDelay() {
+    if (autoBackoff) return CONFIG.autoBackoffMs;
+    return Date.now() < fastUntil ? CONFIG.autoFastMs : CONFIG.autoSlowMs;
+  }
+  function scheduleAuto() {
+    global.clearTimeout(autoTimer); autoTimer = null;
+    if (global.DESK_NO_AUTO || !visible() || !keyStore.get()) return;
+    autoTimer = global.setTimeout(() => { autoTick().catch(() => { /* 画面は落とさない */ }); }, nextDelay());
+  }
+  async function autoTick() {
+    autoTimer = null;
+    if (!visible() || !keyStore.get() || !DATA) { scheduleAuto(); return; }
+    if (!busy() && !typing()) await reload({ auto: true });
+    scheduleAuto();
+  }
+  function boost() { fastUntil = Date.now() + CONFIG.autoFastWindowMs; scheduleAuto(); }
+  function onVisibility() {
+    if (!visible()) { global.clearTimeout(autoTimer); autoTimer = null; return; }
+    // 戻ったらすぐ1回読む（直前に読んだばかりなら待つ）
+    if (DATA && lastOk && Date.now() - Date.parse(lastOk) > 5e3) autoTick().catch(() => { /* 画面は落とさない */ });
+    else scheduleAuto();
   }
 
   /* ============ 押されたとき ============ */
@@ -1699,15 +1793,18 @@
     });
     doc.addEventListener("keydown", (e) => { if (e.key === "Enter" && e.target && e.target.id === "token-in") { const b = doc.querySelector('[data-act="save-token"]'); if (b) b.click(); } });
     global.addEventListener("hashchange", route);
+    doc.addEventListener("visibilitychange", onVisibility);
     global.addEventListener("resize", () => { if ((cur === "talk" || cur === "more") && isPC()) route(); });
     route();
-    return reload();
+    const first = reload();
+    first.then(scheduleAuto, scheduleAuto);
+    return first;
   }
 
   global.Desk3 = {
     CONFIG, TALK_RE, buildTurns, buildTalkBody, imagePath, findAnswers, buildBody, relayFromRuns, parseRunTitle, activeFromRuns, normalize, safeHref, resolveSegments,
     mediaPath, fetchMedia, runInfo, toRun, parseCommit, toCommit, deptStats, visitBaseline, sinceCounts, deskStale, latestExp, parseApprovals, countByDay, exchanges, groupsOf,
-    started: null,
+    autoTick, started: null,
     start() { this.started = start(); return this.started; }
   };
   if (!global.DESK_NO_AUTOSTART) global.Desk3.start();

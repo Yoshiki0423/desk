@@ -74,6 +74,7 @@ async function boot(opt) {
   const w = dom.window;
   if (o.token !== null) w.localStorage.setItem("desk.token", o.token || "github_pat_test");
   if (o.visit) w.localStorage.setItem("desk.v3.visit", JSON.stringify(o.visit));
+  if (!o.auto) w.DESK_NO_AUTO = true;   // 自動読み直しの時計は、試すとき（auto: true）だけ動かす。動かすと jsdom の時計でテストが終わらなくなる
   w.DESK_TODAY = o.today || "2030-01-02";
   const f = makeFetch(o.routes || routes(o));
   w.fetch = f.fetch;

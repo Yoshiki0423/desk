@@ -253,6 +253,7 @@ label.opt{display:flex;gap:10px;align-items:center;padding:4px 0}
 .btn.primary{background:var(--acc);color:var(--acc-ink);border-color:var(--acc)}
 .btn:disabled{opacity:.5;cursor:default}
 .btn[aria-pressed="true"]{background:var(--acc-soft);border-color:var(--acc);color:var(--acc);font-weight:700}
+.stampline{color:var(--dim);font-size:12px;padding:14px 16px 20px;text-align:right}.stampline .linkbtn{font-size:12px;display:inline;padding:0 0 0 8px}
 .linkbtn{background:none;border:0;color:var(--acc);font-family:var(--mono);font-weight:700;font-size:14px;padding:6px 0;text-align:left}
 .pill.acc{--c:var(--acc)}.pill.good{--c:var(--ok)}.pill.bad{--c:var(--stop)}
 .ta{min-height:64px}
@@ -341,11 +342,11 @@ label.opt{display:flex;gap:10px;align-items:center;padding:4px 0}
 <body>
 <div class="shell">
   <nav class="side" id="side" aria-label="ページ一覧"></nav>
-  <main class="main" id="main"><div id="notice" role="status"></div><div id="view"></div></main>
+  <main class="main" id="main"><div id="notice" role="status"></div><div id="view"></div><div class="stampline"><span id="stamp"></span> <button type="button" class="linkbtn" data-act="reload">読み直す</button></div></main>
   <aside class="talkcol" id="talkcol"></aside>
 </div>
 <nav class="tabbar" id="tabbar" aria-label="タブ"></nav>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
-<script src="app.js?v=13"></script>
+<script src="app.js?v=14"></script>
 </body>
 </html>
