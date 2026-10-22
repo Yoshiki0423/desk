@@ -122,3 +122,37 @@ test("自動：答えを送ると短い間隔の時計に切り替わる（時�
   assert.ok(delays.includes(b.w.Desk3.CONFIG.autoFastMs), "送った直後は短い間隔");
   b.w.close();
 });
+
+const likesBody = { date: "2030-01-02", items: [{ url: "https://x.com/a/status/1", note: "一言1" }, { url: "https://x.com/b/status/2", note: "一言2" }] };
+const withLikes = () => ({ likes: () => json(200, JSON.stringify(likesBody)) });
+
+test("いいね候補：ホームと社長の番（答えてほしいことの下）に出る。同じ id は1つだけ。済みの印は両方で同じ", async () => {
+  const b = await boot({ hash: "#home", ...withLikes() });
+  assert.equal(b.$$("#likes").length, 1, "ホームに1つ");
+  assert.equal(b.$$("#likes .like").length, 2);
+  await b.click(b.$("#likes .like-go"));   // 押したら済みにする
+  assert.equal(b.$$("#likes .like.is-done").length, 1);
+  await b.go("turn");
+  assert.equal(b.$$("#likes").length, 1, "社長の番にも1つ");
+  assert.equal(b.$$("#likes .like.is-done").length, 1, "済みの印が食い違わない");
+  const t = b.$("#view").innerHTML;
+  assert.ok(t.indexOf('id="req-slot"') < t.indexOf('id="likes"'), "いま答えてほしいことの下");
+  await b.go("marketing");
+  assert.equal(b.$$("#likes").length, 1, "宣伝にも1つだけ");
+  assert.equal(b.$$("#likes .like.is-done").length, 1);
+  b.w.close();
+});
+
+test("いいね候補：自動の読み直しで、押した印と開いた畳みが消えない", async () => {
+  const b = await boot({ hash: "#home", ...withLikes(), auto: false });
+  await b.click(b.$("#likes .like-go"));
+  await b.click(b.$("#likes .like-fold"));   // 畳む
+  assert.equal(b.$$("#likes .like").length, 0);
+  await b.click(b.$("#likes .like-fold"));   // 開く
+  assert.equal(b.$$("#likes .like.is-done").length, 1);
+  await b.w.Desk3.autoTick(); await b.settle();
+  await b.w.Desk3.autoTick(); await b.settle();
+  assert.equal(b.$$("#likes .like.is-done").length, 1, "押した印が残る");
+  assert.equal(b.$("#likes .like-fold").getAttribute("aria-expanded"), "true", "開いた畳みが残る");
+  b.w.close();
+});

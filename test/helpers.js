@@ -56,7 +56,7 @@ function routes(o) {
         if (/status=in_progress/.test(u)) return json(200, { workflow_runs: RUNS.filter((r) => r.status === "in_progress") });
         return json(200, { workflow_runs: /page=1(&|$)/.test(u) ? RUNS : [] });
       } },
-    { match: (u) => u === `${API}/contents/data/desk-likes.json`, reply: () => json(404, { message: "Not Found" }) },
+    { match: (u) => u === `${API}/contents/data/desk-likes.json`, reply: () => (o.likes ? o.likes() : json(404, { message: "Not Found" })) },
     { match: (u) => /\/issues\/\d+$/.test(u), reply: (u) => json(200, { number: 5, comments: 0 }) },
     { match: (u) => /\/issues\/\d+\/comments\?/.test(u), reply: (u) => {
         const n = +u.match(/\/issues\/(\d+)\/comments/)[1], page = +(u.match(/[?&]page=(\d+)/) || [0, 1])[1];

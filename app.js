@@ -1284,6 +1284,7 @@
       : missHtml("いま動いている部署", E.active || new ApiError(0, "")) + go("depts", "部署のページを開く"));
     g += P("部署を動かす仕組みは止まっていないか", "s4 k o12", E.runs ? missHtml("実行の履歴", E.runs) + go("system", "仕組みのページを開く")
       : `<div class="big" style="font-size:44px">${lamp(sys ? "g" : "a")}${sys ? "正常" : "要確認"}</div><div class="note">${sys ? `直近 ${doneRuns.length} 回の実行はすべて成功。` : `失敗した実行があります（直近 ${doneRuns.length} 回のうち ${okN} 回が成功）。`}${lastRun ? `最新は ${esc(hm(lastRun.at))}。` : ""}</div>` + go("system", "仕組みのページを開く"));
+    g += likesHtml();   // 毎日押すものなので、最初の画面にも出す（同じ画面に同時に2つは出ない）
     const wt = DATA.waiting[0];
     g += P("アプリの進み具合", "s6", (g0.apps.map((r) => ladApp(r, true)).join("") || `<div class="empty">線表にアプリの行がありません</div>`) + (wt ? `<div class="note" style="margin-top:4px">${lamp("a")}いま待っているもの：${esc(wt.text)}。</div>` : "") + go("apps", "アプリのページを開く"));
     g += P("宣伝の進み具合", "s6", (mkRows(g0.mk) || `<div class="empty">線表に宣伝の行がありません</div>`) + go("marketing", "宣伝のページを開く"));
@@ -1302,6 +1303,7 @@
     let g = P("いま答えてほしいこと", "s12", (n === 0 ? `<div class="big" style="font-size:44px">${lamp("g")}0<small>件</small></div><div class="note">いま答えを待っているものはありません。</div>` : "")
       + (LOAD.unknownIssues.length ? `<div class="warnbox">Issue #${LOAD.unknownIssues.join("・#")} のコメントが読めず、答え済みかどうか確かめられませんでした。二重に答えないよう、GitHub で確かめてから答えてください。</div>` : "")
       + (DATA.requests.length ? `<div id="req-slot"></div>` : ""));
+    g += likesHtml();   // 「いま答えてほしいこと」のすぐ下
     if (E.approvals) g += P("承認の記録", "s12", missHtml("承認の記録（approvals.jsonl）", E.approvals));
     else {
       const A = LOAD.approvals, ap = A.filter((a) => a.decision === "approved").length, md2 = A.filter((a) => a.modified).length;
