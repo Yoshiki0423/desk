@@ -31,6 +31,7 @@ module.exports = function fixture() {
         answer: { type: "ok_or_note", okLabel: "OK（3本このまま）", notePlaceholder: "", flagPosts: true } },
       { id: "req-11-choice", row: "app11", short: "架空の確認", issue: 11, commentUrl: "https://github.com/example/x/issues/11#issuecomment-2",
         dept: "マーケ部", urgency: "need", title: "架空の確認", decide: "架空", effect: "架空", kind: "steps", steps: ["a", "b"],
+        fullText: "【架空・X】\n\n**決めてほしいこと：架空の件**\n> 引用の行\n\n- 一つ目 **太字** と `コード`\n- 場所：marketing/架空/計画.md、staff/事業部長.md\n- <img src=x onerror=alert(1)> [外](https://example.com/z) [悪](javascript:alert(2))\n\n1. 手順1\n2. 手順2\n\n## 見出し\n\n@Yoshiki0423",
         push: "見る", money: "0", reversible: "戻せる", scope: "これだけ", source: "架空.md",
         answer: { type: "choice", choices: ["ある", "ない", "分からない"] } },
       { id: "req-12-links", row: "mk12", short: "架空のリンク", issue: 12, commentUrl: "javascript:alert(1)",

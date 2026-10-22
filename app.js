@@ -558,6 +558,66 @@
     }));
   }
 
+
+  /* 依頼の全文（Issue に書いた Markdown）を画面の中で読める形にする。文字はすべて esc を通してから組むので、HTML は動かない。
+     リンクは https:/http: だけ。リポジトリ内のファイルの場所（marketing/…md など）は GitHub のそのファイルへのリンクにする */
+  const REPO_BLOB = "https://github.com/Yoshiki0423/app-company/blob/main/";
+  const MD_PATH = /(?<![A-Za-z0-9/._-])(?:marketing|apps|research|reports|data|staff|scoring|tools|\.github)\/[^\s、。，,（）()「」『』*|`]+?\.(?:md|jsonl|json|html|txt|ps1|yml|js)(?![A-Za-z0-9])/.source;
+  const MD_INLINE = new RegExp([/\*\*([^*]+?)\*\*/.source, /`([^`]+)`/.source, /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/.source, "(" + MD_PATH + ")", /(https?:\/\/[^\s<>)「」、。]+)/.source].join("|"), "g");
+  function mdInline(text, noBold) {
+    let out = "", last = 0, m;
+    const re = new RegExp(MD_INLINE.source, "g");
+    const a = (href, label) => `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+    while ((m = re.exec(text))) {
+      out += esc(text.slice(last, m.index)); last = re.lastIndex;
+      if (m[1] != null) out += noBold ? esc(m[1]) : `<strong>${mdInline(m[1], true)}</strong>`;
+      else if (m[2] != null) out += `<code>${esc(m[2])}</code>`;
+      else if (m[3] != null) out += a(m[4], esc(m[3]));
+      else if (m[5] != null) out += a(REPO_BLOB + m[5].split("/").map(encodeURIComponent).join("/"), esc(m[5]));
+      else out += a(m[6], esc(m[6]));
+    }
+    return out + esc(text.slice(last));
+  }
+  function mdHtml(src) {
+    const lines = String(src == null ? "" : src).replace(/\r\n?/g, "\n").split("\n");
+    const out = [];
+    const LI = /^\s*(?:[-*+]|\d+[.)])\s/;
+    const isBlock = (l) => /^(#{1,6}\s|>|\||```|(-{3,}|\*{3,})\s*$)/.test(l) || LI.test(l);
+    let i = 0;
+    while (i < lines.length) {
+      const l = lines[i];
+      if (/^\s*$/.test(l)) { i++; continue; }
+      if (/^```/.test(l)) { const buf = []; i++; while (i < lines.length && !/^```/.test(lines[i])) buf.push(lines[i++]); i++; out.push(`<pre class="md-pre">${esc(buf.join("\n"))}</pre>`); continue; }
+      let m;
+      if ((m = /^(#{1,6})\s+(.*)$/.exec(l))) { out.push(`<h4 class="md-h">${mdInline(m[2])}</h4>`); i++; continue; }
+      if (/^(-{3,}|\*{3,})\s*$/.test(l)) { out.push("<hr>"); i++; continue; }
+      if (/^>/.test(l)) { const buf = []; while (i < lines.length && /^>/.test(lines[i])) buf.push(mdInline(lines[i++].replace(/^>\s?/, ""))); out.push(`<blockquote>${buf.join("<br>")}</blockquote>`); continue; }
+      if (LI.test(l)) {
+        const ord = /^\s*\d+[.)]\s/.test(l), items = [];
+        const same = ord ? /^\s*\d+[.)]\s/ : /^\s*[-*+]\s/;
+        while (i < lines.length && same.test(lines[i])) {
+          const t = lines[i++].replace(/^\s*(?:[-*+]|\d+[.)])\s+/, "");
+          const cont = [];
+          while (i < lines.length && lines[i].trim() !== "" && /^\s{2,}/.test(lines[i]) && !LI.test(lines[i])) cont.push(lines[i++].trim());
+          items.push(`<li>${mdInline([t].concat(cont).join(" "))}</li>`);
+        }
+        const tag = ord ? "ol" : "ul";
+        out.push(`<${tag}>${items.join("")}</${tag}>`); continue;
+      }
+      if (/^\|/.test(l)) {
+        const rows = [];
+        while (i < lines.length && /^\|/.test(lines[i])) rows.push(lines[i++]);
+        const cells = (r) => r.replace(/^\||\|\s*$/g, "").split("|").map((c) => c.trim());
+        const body = rows.filter((r) => !/^\|[\s:|-]+\|?\s*$/.test(r)).map((r, k) => "<tr>" + cells(r).map((c) => (k ? `<td>${mdInline(c)}</td>` : `<th>${mdInline(c)}</th>`)).join("") + "</tr>");
+        out.push(`<div class="md-table"><table>${body.join("")}</table></div>`); continue;
+      }
+      const buf = [];
+      while (i < lines.length && lines[i].trim() !== "" && (buf.length === 0 || !isBlock(lines[i]))) buf.push(mdInline(lines[i++]));
+      out.push(`<p>${buf.join("<br>")}</p>`);
+    }
+    return out.join("");
+  }
+
   function realHtml(r) {
     let h = "";
     if (r.kind === "posts" && Array.isArray(r.posts)) {
@@ -656,6 +716,7 @@
       has(r.effect) ? `<p class="lead">${esc(r.effect)}</p>` : "",
       has(r.push) ? `<div class="push"><b>推し</b>　${esc(r.push)}</div>` : "",
       facts.length ? `<dl class="facts">${facts.map((x) => `<dt>${x[0]}</dt><dd>${esc(x[1])}</dd>`).join("")}</dl>` : "",
+      has(r.fullText) ? `<details class="fulltext"><summary>依頼の全文（GitHub に書いたものと同じ）</summary><div class="md">${mdHtml(r.fullText)}</div></details>` : "",
       has(r.source) || commentLink ? `<div class="src">詳しくは ${has(r.source) ? esc(r.source) : ""}${commentLink}</div>` : ""
     ].join("");
     el.innerHTML = `<button type="button" class="req-head" data-toggle="${id}" aria-expanded="false" aria-controls="${id}-body">

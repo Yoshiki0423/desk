@@ -322,3 +322,26 @@ test("media：取れなかった物は『読めませんでした（理由）』
   assert.ok(b.$("#req-11-posts-p0 p").textContent.includes("架空の文1"));
   assert.ok(b.$("#req-11-posts-p1"));
 });
+
+test("画面：依頼の全文（fullText）を畳んで置き、Markdown を読める形にする。HTML は動かず、ファイルの場所は GitHub のリンクになる", async () => {
+  const b = await boot({ hash: "#turn" });
+  await b.click(b.$('[data-toggle="req-11-choice"]'));
+  const d = b.$("#req-11-choice details.fulltext");
+  assert.ok(d, "全文の枠がある");
+  assert.equal(d.open, false, "初めは畳んである");
+  assert.equal(b.$$("#req-11-posts details.fulltext").length, 0, "fullText が無い依頼には枠を出さない");
+  const md = d.querySelector(".md");
+  assert.equal(md.querySelector("strong").textContent.includes("決めてほしいこと"), true);
+  assert.ok(md.querySelector("blockquote").textContent.includes("引用の行"));
+  assert.equal(md.querySelectorAll("ul li").length, 3);
+  assert.equal(md.querySelectorAll("ol li").length, 2);
+  assert.ok(md.querySelector("h4"));
+  assert.ok(md.querySelector("code").textContent === "コード");
+  const hrefs = [...md.querySelectorAll("a")].map((a) => a.getAttribute("href"));
+  assert.ok(hrefs.includes("https://github.com/Yoshiki0423/app-company/blob/main/marketing/" + encodeURIComponent("架空") + "/" + encodeURIComponent("計画.md")));
+  assert.ok(hrefs.includes("https://github.com/Yoshiki0423/app-company/blob/main/staff/" + encodeURIComponent("事業部長.md")));
+  assert.ok(hrefs.includes("https://example.com/z"));
+  assert.ok(!hrefs.some((h) => /^javascript:/i.test(h)), "javascript: のリンクは作らない");
+  assert.equal(md.querySelectorAll("img").length, 0);
+  assert.ok(md.textContent.includes("<img src=x onerror=alert(1)>"), "HTML は文字として見える");
+});
