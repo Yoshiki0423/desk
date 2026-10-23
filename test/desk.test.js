@@ -323,6 +323,28 @@ test("media：取れなかった物は『読めませんでした（理由）』
   assert.ok(b.$("#req-11-posts-p1"));
 });
 
+test("media：投稿以外の依頼（links）の直下の media も出る。links と併用でき、動画は再生できる形で出る", async () => {
+  const b = await boot({ hash: "#turn", desk: () => {
+    const d = require("./fixture")();
+    const r = d.requests.find((x) => x.id === "req-11-choice");
+    r.kind = "links"; r.links = [{ label: "別の資料", href: "https://example.com/a" }];
+    r.media = [{ kind: "video", path: "marketing/やめたい人/動画/禁煙.mp4" }, { kind: "image", path: "marketing/a.png" }];
+    return json(200, JSON.stringify(d));
+  } });
+  const made = [], calls = [];
+  b.w.URL.createObjectURL = (blob) => { made.push(blob); return "blob:t/" + made.length; };
+  const orig = b.w.fetch;
+  b.w.fetch = async (url, o) => { if (/\/contents\/marketing\//.test(String(url))) { calls.push(String(url)); return bytes(); } return orig(url, o); };
+  await b.click(b.$('[data-toggle="req-11-choice"]'));
+  const el = b.$("#req-11-choice");
+  assert.equal(calls.length, 2);
+  const vid = el.querySelector(".media video");
+  assert.ok(vid && vid.controls && vid.hasAttribute("playsinline"));
+  assert.equal(vid.getAttribute("src").slice(0, 5), "blob:");
+  assert.ok(el.querySelector(".media img"));
+  assert.ok(el.querySelector(".linklist a"), "links も残る");
+});
+
 test("画面：依頼の全文（fullText）を畳んで置き、Markdown を読める形にする。HTML は動かず、ファイルの場所は GitHub のリンクになる", async () => {
   const b = await boot({ hash: "#turn" });
   await b.click(b.$('[data-toggle="req-11-choice"]'));

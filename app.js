@@ -534,11 +534,14 @@
     const buf = await res.arrayBuffer();
     return global.URL.createObjectURL(new global.Blob([buf], { type }));
   }
+  /* 依頼そのものの media（kind を問わない）は、投稿の番号の代わりに "r" を入れた枠に出す */
   function loadMedia(r, el) {
     if (!el || el.dataset.mediaLoaded === "1") return;
     el.dataset.mediaLoaded = "1";
     const token = keyStore.get();
-    (r.posts || []).forEach((p, i) => mediaList(p).forEach((m, j) => {
+    const owners = (r.posts || []).map((p, i) => [p, i]);
+    owners.push([r, "r"]);
+    owners.forEach(([p, i]) => mediaList(p).forEach((m, j) => {
       const slot = el.querySelector(`[data-mslot="${CSS_ID(r.id)}|${i}|${j}"]`);
       if (!slot) return;
       const show = (url) => {
@@ -546,7 +549,7 @@
         const video = m.kind === "video";
         const node = doc.createElement(video ? "video" : "img");
         if (video) { node.controls = true; node.setAttribute("playsinline", ""); node.muted = true; node.setAttribute("muted", ""); node.preload = "metadata"; node.src = url; slot.appendChild(node); return; }
-        node.src = url; node.alt = "投稿に付ける画像 " + (j + 1);
+        node.src = url; node.alt = "付いている画像 " + (j + 1);
         const a = doc.createElement("a");
         a.href = url; a.target = "_blank"; a.rel = "noopener noreferrer"; a.title = "タップで原寸を開く";
         a.appendChild(node); slot.appendChild(a);
@@ -637,6 +640,7 @@
       if (cp) h += `<div class="btnrow"><button type="button" class="btn" data-copy="${esc(cp.href)}">リンクをコピー</button></div><div class="src" id="${esc(r.id)}-copied" role="status"></div>`;
       if (r.checksOrdered) h += `<div><div class="real-label">${esc(r.checksTitle)}</div><ol class="checks">${r.checksOrdered.map((s) => `<li>${esc(s)}</li>`).join("")}</ol></div>`;
     }
+    if (r.kind !== "posts") h += mediaSlots(r, r, "r");
     if (r.realNote) h += `<div class="src">${esc(r.realNote)}</div>`;
     if (r.kind !== "links" && Array.isArray(r.checks)) h += `<details><summary>確かめたこと</summary><ul class="checks">${r.checks.map((s) => `<li>${esc(s)}</li>`).join("")}</ul></details>`;
     return h;
@@ -766,7 +770,7 @@
     el.querySelector(".req-head").setAttribute("aria-expanded", String(open));
     el.querySelector(`[id$="-body"]`).hidden = !open;
     el.querySelector(".rh-more").textContent = open ? "閉じる" : "開いて実物を見る・答える";
-    if (open && DATA) { const r = DATA.requests.find((x) => x.id === el.id); if (r && r.kind === "posts") loadMedia(r, el); }
+    if (open && DATA) { const r = DATA.requests.find((x) => x.id === el.id); if (r) loadMedia(r, el); }
   }
 
   function noteOf(r) {
